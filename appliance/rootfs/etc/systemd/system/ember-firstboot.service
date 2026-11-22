@@ -1,0 +1,15 @@
+[Unit]
+Description=Ember box first start (grow the SD card partition, new SSH keys)
+DefaultDependencies=no
+After=local-fs.target
+Before=ember-config.service ember.service
+ConditionPathExists=!/var/lib/ember-sys/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ember-helper firstboot
+RemainAfterExit=yes
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+# Publishing a version: bump VERSION (and package.json), commit, then tag it:  git tag v0.3.0 && git push --tags
+# This builds the program package for the laser box and attaches it to a GitHub release. Boxes find it by themselves
+# and offer the update.
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  box:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Tag must match VERSION
+        run: |
+          V="$(tr -d '\r\n' < VERSION)"
+          [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION ($V)"; exit 1; }
+      - run: npm ci
+      - run: npm test
+      - run: bash scripts/make-box.sh out
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" out/ember-box-*.tar.gz out/ember-box-*.tar.gz.sha256 \
+            --title "Ember ${GITHUB_REF_NAME}" --generate-notes

@@ -1,0 +1,57 @@
+# Builds the ready-to-flash SD card image for the Orange Pi Zero 4.
+# How to use: Actions -> "Build SD card image" -> Run workflow (30 to 60 minutes).
+# Needs: the stock Orange Pi Zero 4 image in a release called "base-image" (this repo's, or the one named below),
+# and at least one published Ember version (push a tag like v0.2.1 first, see release.yml).
+# The finished image appears under Releases -> "Latest SD card image".
+name: Build SD card image
+on:
+  workflow_dispatch:
+    inputs:
+      base_repo:
+        description: 'Where else to find the base image release if this repo has none (owner/name)'
+        default: ''
+        required: false
+permissions:
+  contents: write
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the Orange Pi base image
+        run: |
+          mkdir -p base
+          gh release download base-image --dir base --repo "$GITHUB_REPOSITORY" 2>/dev/null \
+            || { [ -n "${{ inputs.base_repo }}" ] && gh release download base-image --dir base --repo "${{ inputs.base_repo }}"; } || {
+            echo "::error::No release called 'base-image' found. Create one here, or give the repo that has it when you run this."; exit 1; }
+          echo "BASE_FILE=$(ls -S base/* | head -1)" >> "$GITHUB_ENV"
+      - name: Get the newest Ember program package
+        run: |
+          mkdir -p box
+          TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          [ -n "$TAG" ] || { echo "::error::No Ember release yet. Push a tag like v0.2.1 first."; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'ember-box-*.tar.gz' --dir box
+          echo "BOX_FILE=$(ls box/ember-box-*.tar.gz | head -1)" >> "$GITHUB_ENV"
+      - name: Check the scripts
+        run: |
+          bash -n appliance/build-image.sh appliance/customize.sh
+          sh -n appliance/rootfs/usr/local/sbin/ember-rollback
+          python3 -m py_compile appliance/rootfs/usr/local/lib/ember/embersys.py
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fdisk dosfstools mtools e2fsprogs xz-utils rsync python3 curl p7zip-full util-linux
+      - name: Build the SD card image
+        run: |
+          sudo bash appliance/build-image.sh --base "$BASE_FILE" --box "$BOX_FILE" --name ember-orangepi-zero4 --repo "$GITHUB_REPOSITORY" --out "$GITHUB_WORKSPACE/out"
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/out"
+          ls -lh out
+      - name: Publish it as the "Latest SD card image" release
+        run: |
+          gh release delete latest-image --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          # a pre-release, so it is never mistaken for an Ember version by the update check
+          gh release create latest-image out/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --title "Latest SD card image" --notes-file appliance/RELEASE-NOTES.md

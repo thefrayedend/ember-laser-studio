@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs before every start of the Ember service. If an update was just installed and the new version has already failed
+# to stay up twice, go back to the version that worked.
+R=${EMBER_ROOT:-/opt/ember}
+M="$R/pending-update"
+[ -f "$M" ] || exit 0
+n=$(sed -n 's/^attempts=//p' "$M" | head -1); n=${n:-0}; n=$((n+1))
+from=$(sed -n 's/^from=//p' "$M" | head -1)
+if [ "$n" -gt 2 ] && [ -n "$from" ] && [ -d "$R/releases/$from" ]; then
+  ln -sfn "releases/$from" "$R/current.new" && mv -T "$R/current.new" "$R/current"
+  rm -f "$M"
+  echo "ember: the update would not start, went back to $from" >&2
+  exit 0
+fi
+sed -i '/^attempts=/d' "$M"
+echo "attempts=$n" >> "$M"
+exit 0

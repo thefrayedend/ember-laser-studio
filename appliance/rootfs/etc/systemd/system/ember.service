@@ -1,0 +1,25 @@
+[Unit]
+Description=Ember Laser Studio (laser control and camera, web app on port 80)
+After=network.target ember-config.service
+Wants=network-online.target
+
+[Service]
+User=ember
+Group=ember
+WorkingDirectory=/opt/ember/current
+Environment=PORT=80
+Environment=EMBER_DATA=/var/lib/ember
+Environment=EMBER_CAMERA=/dev/video0
+Environment=EMBER_ROOT=/opt/ember
+Environment=EMBER_LINKFILE=/embersetup/MY-ACCESS-LINK.txt
+ExecStartPre=/usr/local/sbin/ember-rollback
+ExecStart=/usr/local/bin/node dist/server/server.js
+# Port 80 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+Restart=always
+RestartSec=3
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

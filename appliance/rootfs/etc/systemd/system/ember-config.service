@@ -1,0 +1,15 @@
+[Unit]
+Description=Ember box - apply ember-config.txt from the SD card (Wi-Fi, name, first admin, SSH)
+After=NetworkManager.service embersetup.mount ember-firstboot.service
+Wants=NetworkManager.service
+Before=network-online.target ember.service avahi-daemon.service
+RequiresMountsFor=/embersetup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ember-helper apply-config
+RemainAfterExit=yes
+TimeoutStartSec=2min
+
+[Install]
+WantedBy=multi-user.target
