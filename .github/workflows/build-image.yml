@@ -1,7 +1,7 @@
 # Builds the ready-to-flash SD card image for the Orange Pi Zero 4.
 # How to use: Actions -> "Build SD card image" -> Run workflow (30 to 60 minutes).
 # Needs: the stock Orange Pi Zero 4 image in a release called "base-image" (this repo's, or the one named below),
-# and at least one published Ember version (push a tag like v0.2.1 first, see release.yml).
+# and at least one published Ember version (run the Release workflow first).
 # The finished image appears under Releases -> "Latest SD card image".
 name: Build SD card image
 on:
@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p box
           TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-          [ -n "$TAG" ] || { echo "::error::No Ember release yet. Push a tag like v0.2.1 first."; exit 1; }
+          [ -n "$TAG" ] || { echo "::error::No Ember release yet. Run the Release workflow first."; exit 1; }
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'ember-box-*.tar.gz' --dir box
           echo "BOX_FILE=$(ls box/ember-box-*.tar.gz | head -1)" >> "$GITHUB_ENV"
       - name: Check the scripts

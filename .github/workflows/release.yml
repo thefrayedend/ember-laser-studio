@@ -1,10 +1,9 @@
-# Publishing a version: bump VERSION (and package.json), commit, then tag it:  git tag v0.3.0 && git push --tags
-# This builds the program package for the laser box and attaches it to a GitHub release. Boxes find it by themselves
-# and offer the update.
+# Publishing a version: change the number in VERSION (and "version" in package.json), commit, then
+# Actions -> Release -> Run workflow. It builds the program package for the laser box and publishes it as release
+# v<VERSION>. Boxes find it by themselves and offer the update.
 name: Release
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -14,10 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
-      - name: Tag must match VERSION
+      - name: Read the version
         run: |
           V="$(tr -d '\r\n' < VERSION)"
-          [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION ($V)"; exit 1; }
+          [ "$V" = "$(node -p "require('./package.json').version")" ] || { echo "::error::VERSION and package.json disagree"; exit 1; }
+          echo "V=$V" >> "$GITHUB_ENV"
+          if gh release view "v$V" >/dev/null 2>&1; then echo "::error::Release v$V already exists. Change VERSION first."; exit 1; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: npm ci
       - run: npm test
       - run: bash scripts/make-box.sh out
@@ -25,5 +28,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" out/ember-box-*.tar.gz out/ember-box-*.tar.gz.sha256 \
-            --title "Ember ${GITHUB_REF_NAME}" --generate-notes
+          gh release create "v$V" out/ember-box-*.tar.gz out/ember-box-*.tar.gz.sha256 \
+            --target "$GITHUB_SHA" --title "Ember v$V" --generate-notes

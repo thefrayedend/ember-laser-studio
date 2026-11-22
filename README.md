@@ -7,7 +7,7 @@ Laser design and control software for GRBL lasers (built for the Creality Falcon
 
 ## The box
 
-1. Actions → **Release**: push a tag such as `v0.2.1` (it must match the `VERSION` file). This builds the program package and publishes it.
+1. Actions → **Release** → Run workflow. It builds the program package and publishes it as release `v<VERSION>`.
 2. Actions → **Build SD card image** → Run workflow. It needs the stock Orange Pi Zero 4 image in a release called `base-image`. The result is the **Latest SD card image** release.
 3. Write the image to an SD card, fill in `ember-config.txt` on the card's `EMBER` drive (Wi-Fi), and power the board on. `MY-ACCESS-LINK.txt` on that drive has the private link to open.
 
