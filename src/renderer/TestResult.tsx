@@ -41,10 +41,8 @@ function Inner() {
   const refreshLib = () => void listTests().then(setLib).catch(() => setLib([]))
   useEffect(refreshLib, [])
 
-  const geom = useMemo(
-    () => lastTest ? { cols: lastTest.speeds.length, rows: lastTest.powers.length, cell: lastTest.kind === 'cut' ? 10 : 8, gap: lastTest.kind === 'cut' ? 4 : 2 } : null,
-    [lastTest],
-  )
+  const geom = lastTest?.grid ?? null
+  const [written, setWritten] = useState('')
 
   const scored = useMemo(() => {
     if (!img || !geom || clicks.length < 2) return null
@@ -57,9 +55,10 @@ function Inner() {
   // A guess only: the engraving whose darkness is nearest a clean medium burn; for cuts, the fastest square that went through.
   const guess: Cell | null = useMemo(() => {
     if (!scored || !lastTest) return null
+    const st = (c: Cell) => lastTest.grid!.cells[c.r * lastTest.grid!.cols + c.c].settings
     if (lastTest.kind === 'engrave') return [...scored.cells].sort((p, q) => Math.abs(p.darkness - 0.55) + p.spread * 0.5 - (Math.abs(q.darkness - 0.55) + q.spread * 0.5))[0]
     const through = scored.cells.filter((c) => c.darkness > 0.6)
-    return through.sort((p, q) => lastTest.speeds[q.c] - lastTest.speeds[p.c] || lastTest.powers[p.r] - lastTest.powers[q.r])[0] ?? null
+    return through.sort((p, q) => (st(q).speed ?? 0) - (st(p).speed ?? 0) || (st(p).passes ?? 1) - (st(q).passes ?? 1) || (st(p).power ?? 0) - (st(q).power ?? 0))[0] ?? null
   }, [scored, lastTest])
 
   // Draw picture + grid overlay
@@ -103,7 +102,7 @@ function Inner() {
       setImg(toImage(bm, bm.width, bm.height))
       setClicks([])
       setBest(null)
-      setView('mark')
+      setView(lastTest?.grid ? 'mark' : 'result')
     } catch {
       setErr('Could not read that picture.')
     }
@@ -118,7 +117,7 @@ function Inner() {
       setImg(new ImageData(w.data, w.w, w.h))
       setClicks([])
       setBest(null)
-      setView('mark')
+      setView(lastTest?.grid ? 'mark' : 'result')
     } catch (e) {
       setErr('Could not take the photo: ' + (e as Error).message)
     }
@@ -149,30 +148,30 @@ function Inner() {
     c.toBlob((b) => res(b!), 'image/jpeg', 0.85)
   })
 
+  const cellText = (b: { c: number; r: number } | null | undefined) => (b && geom ? geom.cells[b.r * geom.cols + b.c]?.text : undefined)
   const save = async () => {
     if (!img || !lastTest || !name.trim()) return setErr('Give it a name, such as "3 mm birch ply".')
-    const rec: TestRecord = { id: 't' + Date.now(), at: Date.now(), name: name.trim(), kind: lastTest.kind, speeds: lastTest.speeds, powers: lastTest.powers, best: best ?? undefined, image: await blobOf() }
+    const rec: TestRecord = { id: 't' + Date.now(), at: Date.now(), name: name.trim(), kind: lastTest.kind, title: lastTest.title, result: cellText(best) ?? (written.trim() || undefined), best: best ?? undefined, image: await blobOf() }
     await saveTest(rec)
-    if (best) {
+    const cell = best && geom ? geom.cells[best.r * geom.cols + best.c] : null
+    if (cell) {
       const id = 'user-test-' + rec.id
       if (!userPresets.some((p) => p.id === id))
         useStore.getState().addUserPreset({
           id,
-          name: rec.name,
+          name: rec.name + ` (${lastTest.title.replace(/ test$/, '').toLowerCase()})`,
           material: 'My presets',
           operation: lastTest.kind === 'cut' ? 'cut' : 'engrave',
-          settings: { mode: lastTest.kind === 'cut' ? 'line' : 'fill', speed: lastTest.speeds[best.c], power: lastTest.powers[best.r], passes: 1, lineInterval: 0.1 },
+          settings: { mode: lastTest.kind === 'cut' ? 'line' : 'fill', passes: 1, lineInterval: 0.1, ...cell.settings },
           note: 'From a camera-rated material test.',
         })
     }
-    useStore.getState().notify('ok', best ? 'Saved the test and a preset.' : 'Saved the test.')
+    useStore.getState().notify('ok', cell ? 'Saved the test and a preset.' : 'Saved the test.')
     refreshLib()
     setView('library')
   }
 
-  const unit = useStore((s) => s.speedUnit)
-  const fmtSp = (v: number) => (unit === 'mm/min' ? Math.round(v * 60) : Math.round(v * 10) / 10) + ' ' + unit
-  const urls = useMemo(() => lib.map((t) => URL.createObjectURL(t.image)), [lib])
+    const urls = useMemo(() => lib.map((t) => URL.createObjectURL(t.image)), [lib])
   useEffect(() => () => urls.forEach(URL.revokeObjectURL), [urls])
 
   return (
@@ -204,19 +203,27 @@ function Inner() {
         {(view === 'mark' || view === 'result') && lastTest && img && (
           <>
             <p className="hint">
-              {clicks.length < 2
-                ? `Click the ${clicks.length === 0 ? 'top-left' : 'bottom-right'} corner of the whole test grid.`
-                : `Each square shows how dark it is (0 = like the plain material, 100 = black). Yellow outline: my guess. Click the square you like best (green).`}
-              {' '}Columns: {lastTest.speeds.map(fmtSp).join(', ')} left to right. Rows: {lastTest.powers.join(', ')}% bottom to top.
+              {geom
+                ? clicks.length < 2
+                  ? `Click the ${clicks.length === 0 ? 'top-left' : 'bottom-right'} corner of the whole test grid.`
+                  : 'Each square shows how dark it is (0 = like the plain material, 100 = black). Yellow outline: my guess. Click the square you like best (green).'
+                : 'Look over the photo, then write down what you found.'}
+              {' '}{lastTest.note}
             </p>
-            <canvas ref={canvas} onClick={onClick} style={{ width: '100%', maxHeight: '55vh', objectFit: 'contain', cursor: 'crosshair', background: '#000' }} />
-            <div className="modal-actions">
-              <button onClick={() => (setClicks([]), setBest(null), setView('mark'))}>Redo corners</button>
-              {guess && <button onClick={() => setBest({ c: guess.c, r: guess.r })}>Use my guess</button>}
-            </div>
-            {scored && (
+            <canvas ref={canvas} onClick={onClick} style={{ width: '100%', maxHeight: '55vh', objectFit: 'contain', cursor: geom ? 'crosshair' : 'default', background: '#000' }} />
+            {geom && (
+              <div className="modal-actions">
+                <button onClick={() => (setClicks([]), setBest(null), setView('mark'))}>Redo corners</button>
+                {guess && <button onClick={() => setBest({ c: guess.c, r: guess.r })}>Use my guess</button>}
+              </div>
+            )}
+            {(scored || !geom) && (
               <>
-                <p className="hint">Dark scores depend on lighting, so treat them as a guide. {best ? `Chosen: ${fmtSp(lastTest.speeds[best.c])} at ${lastTest.powers[best.r]}% power.` : 'Pick a square to also save a preset.'}</p>
+                {geom ? (
+                  <p className="hint">Dark scores depend on lighting, so treat them as a guide. {best ? `Chosen: ${cellText(best)}.` : 'Pick a square to also save a preset.'}</p>
+                ) : (
+                  <label className="field"><span>{lastTest.prompt ?? 'What did you find?'}</span><input value={written} onChange={(e) => setWritten(e.target.value)} /></label>
+                )}
                 <label className="field"><span>Material name</span><input value={name} placeholder="e.g. 3 mm birch ply" onChange={(e) => setName(e.target.value)} /></label>
                 <div className="modal-actions"><button className="primary" onClick={() => void save()}>Save photo{best ? ' and make a preset' : ''}</button></div>
               </>
@@ -230,8 +237,8 @@ function Inner() {
               <div key={t.id} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <a href={urls[i]} target="_blank" rel="noreferrer"><img src={urls[i]} alt="" style={{ width: 96, height: 72, objectFit: 'cover' }} /></a>
                 <div style={{ flex: 1 }}>
-                  <b>{t.name}</b> <span className="hint">{new Date(t.at).toLocaleDateString()} · {t.kind}</span>
-                  <div className="hint">{t.best ? `Best: ${fmtSp(t.speeds[t.best.c])} at ${t.powers[t.best.r]}%` : 'No square chosen'}</div>
+                  <b>{t.name}</b> <span className="hint">{new Date(t.at).toLocaleDateString()} · {t.title}</span>
+                  <div className="hint">{t.result ? `Result: ${t.result}` : 'No result noted'}</div>
                 </div>
                 <button onClick={() => void deleteTest(t.id).then(refreshLib)}>Delete</button>
               </div>

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { buildTest, type BuiltTest, type TestId } from '../core/test/suites'
 import {
   compileDoc,
   LAYER_COLORS,
@@ -14,7 +15,7 @@ import {
 } from '../core/document'
 import { importSvg } from '../core/svg/import'
 import { BUILTIN_PRESETS, type MaterialPreset } from '../core/materials'
-import { generateFrame, generateTestGrid } from '../core/gcode/generate'
+import { generateFrame } from '../core/gcode/generate'
 import { rectPath } from '../core/geometry/path'
 import { defaultLayer, FALCON2_12W, FALCON2_22W, type GenResult, type LayerSettings, type MachineProfile, type OriginMode } from '../core/types'
 import type { MachineStatus } from '../core/grbl/protocol'
@@ -149,8 +150,8 @@ interface Actions {
   traceImage: (id: string, opts: TraceOptions, keepImage: boolean) => void
   generate: () => Promise<GenState | null>
   makeFrameLines: () => string[] | null
-  makeTestGrid: (speeds: number[], powers: number[], kind?: 'engrave' | 'cut') => Promise<void>
-  lastTest: { kind: 'engrave' | 'cut'; speeds: number[]; powers: number[] } | null
+  makeTest: (id: TestId, o: { speed: number; power: number; speeds: number[]; powers: number[]; thickness: number }) => Promise<void>
+  lastTest: BuiltTest | null
   testOpen: boolean
   setTestOpen: (v: boolean) => void
   addUserPreset: (p: MaterialPreset) => void
@@ -610,14 +611,13 @@ export const useStore = create<State & Actions>((set, get) => {
       return lines
     },
 
-    makeTestGrid: async (speeds, powers, kind = 'engrave') => {
-      const fmtU = (v: number) => (get().speedUnit === 'mm/min' ? Math.round(v * 60) : Math.round(v * 10) / 10)
+    makeTest: async (id, o) => {
       const { machine, origin } = get()
-      const r = generateTestGrid({ machine, origin, speeds, powers, cell: kind === 'cut' ? 10 : 8, gap: kind === 'cut' ? 4 : 2, lineInterval: 0.1, mode: kind === 'cut' ? 'line' : 'fill' })
-      const out = await callWorker({ type: 'parse', lines: r.lines })
+      const t = buildTest(id, { ...o, machine, origin })
+      const out = await callWorker({ type: 'parse', lines: t.result.lines })
       if (!out.ok) return get().notify('error', out.error)
-      set({ lastTest: { kind, speeds, powers } })
-      set({ raw: { name: 'material-test-grid.nc', lines: r.lines }, gen: { result: r, packed: out.packed, lines: r.lines, name: 'material-test-grid', fromDesign: false, note: `Material test. Columns, left to right: ${speeds.map((v) => fmtU(v)).join(', ')} ${get().speedUnit}. Rows, bottom to top: ${powers.join(', ')}% power. Burn it on scrap, then pick the square that looks best.` }, tab: 'preview' })
+      set({ lastTest: t })
+      set({ raw: { name: 'material-test.nc', lines: t.result.lines }, gen: { result: t.result, packed: out.packed, lines: t.result.lines, name: 'material-test', fromDesign: false, note: `${t.title}. ${t.note}` }, tab: 'preview' })
     },
 
     openSend: (sendOpen) => set({ sendOpen }),
@@ -675,7 +675,7 @@ export const useStore = create<State & Actions>((set, get) => {
           else if (lj && jp && e.where === 'pc' && jp.name === lj.name && jp.acked > 0 && jp.acked < lj.lines.length)
             set({ resumable: { ...lj, acked: jp.acked, pos: wp ? { x: wp.x, y: wp.y } : null } })
           set({ job: null })
-          if (e.result === 'done' && get().gen?.name === 'material-test-grid' && get().lastTest) {
+          if (e.result === 'done' && jp?.name === 'material-test' && get().lastTest) {
             get().notify('ok', 'Test burned. Take a photo of it to rate it.')
             set({ testOpen: true })
           } else if (e.result === 'done') get().notify('ok', 'Job finished.')

@@ -4,6 +4,7 @@ import { DesignCanvas } from './DesignCanvas'
 import { LayersPanel } from './panels/LayersPanel'
 import { PropertiesPanel } from './panels/PropertiesPanel'
 import { useStore, type Tool } from './store'
+import { TESTS, type TestId } from '../core/test/suites'
 
 const TOOLS: { id: Tool; label: string; glyph: string }[] = [
   { id: 'select', label: 'Select (V)', glyph: '⬉' },
@@ -17,37 +18,64 @@ const TOOLS: { id: Tool; label: string; glyph: string }[] = [
 function TestGridDialog({ onClose }: { onClose: () => void }) {
   useEscape(onClose)
   const unit = useStore((s) => s.speedUnit)
-  const [kind, setKind] = useState<'engrave' | 'cut'>('engrave')
+  const [id, setId] = useState<TestId>('engrave')
+  const meta = TESTS.find((t) => t.id === id)!
   const per = unit === 'mm/min' ? 1 : 1 / 60
-  const defaults = {
-    engrave: { speeds: [2000, 3000, 4000, 5000, 6000].map((v) => Math.round(v * per)), powers: [20, 30, 40, 50, 60] },
-    cut: { speeds: [100, 200, 300, 400, 600].map((v) => Math.round(v * per * 10) / 10), powers: [70, 85, 100] },
+  const r1 = (v: number) => Math.round(v * 10) / 10
+  const defaults: Record<string, { speeds: number[]; powers: number[]; speed: number; power: number }> = {
+    engrave: { speeds: [2000, 3000, 4000, 5000, 6000].map((v) => r1(v * per)), powers: [20, 30, 40, 50, 60], speed: r1(4000 * per), power: 40 },
+    cut: { speeds: [100, 200, 300, 400, 600].map((v) => r1(v * per)), powers: [70, 85, 100], speed: r1(300 * per), power: 100 },
+    marking: { speeds: [3000, 6000, 9000].map((v) => r1(v * per)), powers: [5, 10, 15, 20], speed: r1(6000 * per), power: 10 },
+    air: { speeds: [3000, 4500, 6000].map((v) => r1(v * per)), powers: [30, 45, 60], speed: r1(4000 * per), power: 40 },
   }
-  const [speeds, setSpeeds] = useState(defaults.engrave.speeds.join(', '))
-  const [powers, setPowers] = useState(defaults.engrave.powers.join(', '))
+  const d = (k: string) => defaults[k] ?? (['passes', 'kerf'].includes(k) ? defaults.cut : defaults.engrave)
+  const [speeds, setSpeeds] = useState(d('engrave').speeds.join(', '))
+  const [powers, setPowers] = useState(d('engrave').powers.join(', '))
+  const [speed, setSpeed] = useState(String(d('engrave').speed))
+  const [power, setPower] = useState(String(d('engrave').power))
+  const [thick, setThick] = useState('3')
   const [err, setErr] = useState('')
-  const pick = (k: 'engrave' | 'cut') => (setKind(k), setSpeeds(defaults[k].speeds.join(', ')), setPowers(defaults[k].powers.join(', ')))
+  const pick = (k: TestId) => {
+    setId(k)
+    setSpeeds(d(k).speeds.join(', '))
+    setPowers(d(k).powers.join(', '))
+    setSpeed(String(d(k).speed))
+    setPower(String(d(k).power))
+    setErr('')
+  }
   const parse = (s: string) => s.split(/[,\s]+/).filter(Boolean).map(Number)
   const go = () => {
     const sp = parse(speeds)
     const pw = parse(powers)
-    if (!sp.length || !pw.length || [...sp, ...pw].some((n) => !Number.isFinite(n) || n <= 0)) return setErr('Use positive numbers separated by commas.')
-    if (pw.some((p) => p > 100)) return setErr('Power is a percentage, 1–100.')
+    const one = Number(speed)
+    const onep = Number(power)
+    const t = Number(thick)
+    if (meta.fields.includes('speeds') && (!sp.length || sp.some((n) => !Number.isFinite(n) || n <= 0))) return setErr('Speeds: positive numbers separated by commas.')
+    if (meta.fields.includes('powers') && (!pw.length || pw.some((n) => !Number.isFinite(n) || n <= 0 || n > 100))) return setErr('Powers are percentages, 1–100, separated by commas.')
+    if (meta.fields.includes('speed') && !(one > 0)) return setErr('Speed must be a positive number.')
+    if (meta.fields.includes('power') && !(onep > 0 && onep <= 100)) return setErr('Power is a percentage, 1–100.')
+    if (meta.fields.includes('thickness') && !(t > 0.2 && t < 20)) return setErr('Thickness is in mm.')
     if (sp.length * pw.length > 100) return setErr('Too many cells (max 100).')
-    void useStore.getState().makeTestGrid(sp.map((v) => v / (unit === 'mm/min' ? 60 : 1)), pw, kind)
+    const toS = (v: number) => v / (unit === 'mm/min' ? 60 : 1)
+    void useStore.getState().makeTest(id, { speeds: sp.map(toS), powers: pw, speed: toS(one), power: onep, thickness: t })
     onClose()
   }
   return (
     <div className="modal-back" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Material test</h2>
-        <p className="hint">Not sure what settings your material needs? Burn this on a scrap piece. Speed changes across the columns and power down the rows. Pick the square that looks best.</p>
-        <div className="seg">
-          <button className={kind === 'engrave' ? 'on' : ''} onClick={() => pick('engrave')}>Engraving squares</button>
-          <button className={kind === 'cut' ? 'on' : ''} onClick={() => pick('cut')}>Cutting squares</button>
-        </div>
-        <label className="field"><span>Speeds ({unit}), one per column</span><input value={speeds} onChange={(e) => setSpeeds(e.target.value)} /></label>
-        <label className="field"><span>Powers (%), one per row</span><input value={powers} onChange={(e) => setPowers(e.target.value)} /></label>
+        <h2>Material tests</h2>
+        <label className="field">
+          <span>Which test</span>
+          <select value={id} onChange={(e) => pick(e.target.value as TestId)}>
+            {TESTS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </label>
+        <p className="hint">{meta.blurb} Burn it on a scrap of the same material. When it finishes, Ember offers to rate it from a photo.</p>
+        {meta.fields.includes('speeds') && <label className="field"><span>Speeds ({unit}), one per column</span><input value={speeds} onChange={(e) => setSpeeds(e.target.value)} /></label>}
+        {meta.fields.includes('powers') && <label className="field"><span>Powers (%), one per row</span><input value={powers} onChange={(e) => setPowers(e.target.value)} /></label>}
+        {meta.fields.includes('speed') && <label className="field"><span>Speed ({unit})</span><input value={speed} onChange={(e) => setSpeed(e.target.value)} /></label>}
+        {meta.fields.includes('power') && <label className="field"><span>Power (%)</span><input value={power} onChange={(e) => setPower(e.target.value)} /></label>}
+        {meta.fields.includes('thickness') && <label className="field"><span>Material thickness (mm)</span><input value={thick} onChange={(e) => setThick(e.target.value)} /></label>}
         {err && <p className="err">{err}</p>}
         <div className="modal-actions">
           <button onClick={onClose}>Cancel</button>

@@ -3,8 +3,9 @@ export interface TestRecord {
   at: number
   name: string
   kind: 'engrave' | 'cut'
-  speeds: number[] // mm/s, per column
-  powers: number[] // %, per row
+  title: string
+  /** the chosen square in words, e.g. "3000 mm/min at 40%", or what the user wrote down */
+  result?: string
   best?: { c: number; r: number }
   image: Blob
 }
