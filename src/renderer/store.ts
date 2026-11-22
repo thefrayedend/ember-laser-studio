@@ -153,6 +153,8 @@ interface Actions {
   makeTest: (id: TestId, o: { speed: number; power: number; speeds: number[]; powers: number[]; thickness: number }) => Promise<void>
   lastTest: BuiltTest | null
   testOpen: boolean
+  helpOpen: string | null
+  setHelpOpen: (t: string | null) => void
   setTestOpen: (v: boolean) => void
   addUserPreset: (p: MaterialPreset) => void
   openSend: (v: boolean) => void
@@ -263,6 +265,8 @@ export const useStore = create<State & Actions>((set, get) => {
     userPresets: [],
     lastTest: null,
     testOpen: false,
+    helpOpen: null,
+    setHelpOpen: (helpOpen) => set({ helpOpen }),
     setTestOpen: (testOpen) => set({ testOpen }),
     addUserPreset: (p) => {
       const userPresets = [...get().userPresets, p]

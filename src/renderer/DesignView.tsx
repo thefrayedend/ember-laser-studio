@@ -78,6 +78,7 @@ function TestGridDialog({ onClose }: { onClose: () => void }) {
         {meta.fields.includes('thickness') && <label className="field"><span>Material thickness (mm)</span><input value={thick} onChange={(e) => setThick(e.target.value)} /></label>}
         {err && <p className="err">{err}</p>}
         <div className="modal-actions">
+          <button onClick={() => (onClose(), useStore.getState().setHelpOpen('tests'))}>How this works</button>
           <button onClick={onClose}>Cancel</button>
           <button className="primary" onClick={go}>Build test</button>
         </div>

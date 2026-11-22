@@ -1,3 +1,4 @@
+import { HelpDialog } from './HelpDialog'
 import { TestResultDialog } from './TestResult'
 import { useEscape } from './lib/useEscape'
 import { useEffect, useRef, useState } from 'react'
@@ -217,6 +218,7 @@ export function App() {
           <span className="name">{raw ? raw.name : fileName}</span>
         </div>
         <div className="spacer" />
+        <button className="ghost" onClick={() => useStore.getState().setHelpOpen('start')} title="Help: how to do things">? Help</button>
         <button className="ghost" onClick={() => setMachineOpen(true)} title="Machine settings">⚙ {machineName}</button>
         <button className={'chip st-' + state} onClick={() => setTab('device')} title="Open device tab">
           <i /> {conn.connected ? `${conn.label ?? 'Connected'} · ${state}` : 'Not connected'}
@@ -245,6 +247,7 @@ export function App() {
       </main>
       <UpdateBar />
       <TestResultDialog />
+      <HelpDialog />
       <JobBar />
       <SendDialog />
       {machineOpen && <MachineDialog onClose={() => setMachineOpen(false)} />}

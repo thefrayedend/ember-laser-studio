@@ -245,7 +245,7 @@ function Inner() {
             ))}
           </div>
         )}
-        <div className="modal-actions"><button onClick={close}>Close</button></div>
+        <div className="modal-actions"><button onClick={() => (close(), useStore.getState().setHelpOpen('rate'))}>Help</button><button onClick={close}>Close</button></div>
       </div>
     </div>
   )
