@@ -1,3 +1,4 @@
+import { AdminDialog } from './AdminDialog'
 import { HelpDialog } from './HelpDialog'
 import { TestResultDialog } from './TestResult'
 import { useEscape } from './lib/useEscape'
@@ -142,6 +143,7 @@ export function App() {
   const fileName = useStore((s) => s.fileName)
   const raw = useStore((s) => s.raw)
   const objs = useStore((s) => s.doc.objects.length)
+  const me = useStore((s) => s.me)
   const { setTab, openSend, generate, api, undo, redo, newProject, saveProject, importFiles } = useStore.getState()
   const openRef = useRef<HTMLInputElement>(null)
   const [machineOpen, setMachineOpen] = useState(false)
@@ -219,6 +221,8 @@ export function App() {
         </div>
         <div className="spacer" />
         <button className="ghost" onClick={() => useStore.getState().setHelpOpen('start')} title="Help: how to do things">? Help</button>
+        {me?.role === 'admin' && <button className="ghost" onClick={() => useStore.getState().setAdminOpen(true)} title="Admin: people and settings">👤 Admin</button>}
+        {me && <a className="ghost" href="/api/logout" title="Sign out" style={{ textDecoration: 'none', alignSelf: 'center' }}>{me.name} · Sign out</a>}
         <button className="ghost" onClick={() => setMachineOpen(true)} title="Machine settings">⚙ {machineName}</button>
         <button className={'chip st-' + state} onClick={() => setTab('device')} title="Open device tab">
           <i /> {conn.connected ? `${conn.label ?? 'Connected'} · ${state}` : 'Not connected'}
@@ -230,7 +234,8 @@ export function App() {
         )}
         <button
           className="primary"
-          disabled={!canSend}
+          disabled={!canSend || me?.role === 'viewer'}
+          title={me?.role === 'viewer' ? 'Your account can watch but not run the laser' : undefined}
           onClick={async () => {
             await generate()
             setTab('preview')
@@ -248,6 +253,7 @@ export function App() {
       <UpdateBar />
       <TestResultDialog />
       <HelpDialog />
+      <AdminDialog />
       <JobBar />
       <SendDialog />
       {machineOpen && <MachineDialog onClose={() => setMachineOpen(false)} />}

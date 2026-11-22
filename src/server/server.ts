@@ -14,6 +14,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { MachineController, type EmberEvent } from '../main/controller'
 import { coreHandlers } from '../main/handlers'
 import { Updater } from './updater'
+import { UserStore, allowed, capPower, type Role } from './users'
 
 const PORT = Number(process.env.PORT ?? 8080)
 const DATA = process.env.EMBER_DATA ?? path.join(os.homedir(), '.ember')
@@ -31,10 +32,18 @@ if (!TOKEN) {
     writeFileSync(tokenFile, TOKEN, { mode: 0o600 })
   }
 }
-const COOKIE = 'ember_auth'
+const COOKIE = 'ember_auth' // proves you hold the private link (owner): lets you create or reset the admin account
+const SID = 'ember_sid' // a signed-in session
 const sameToken = (a: string) => a.length === TOKEN.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(TOKEN))
-const cookieOf = (req: http.IncomingMessage) => /(?:^|;\s*)ember_auth=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? ''
-const authed = (req: http.IncomingMessage) => sameToken(decodeURIComponent(cookieOf(req)))
+const cookie = (req: http.IncomingMessage, name: string) => {
+  const m = new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(req.headers.cookie ?? '')
+  return m ? decodeURIComponent(m[1]) : ''
+}
+const ownerProof = (req: http.IncomingMessage) => sameToken(cookie(req, COOKIE))
+const users = new UserStore(path.join(DATA, 'users.json'))
+const userOf = (req: http.IncomingMessage) => users.who(cookie(req, SID))
+const ipOf = (req: http.IncomingMessage) => req.socket.remoteAddress ?? '?'
+const setSid = (id: string) => `${SID}=${encodeURIComponent(id)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`
 
 // ---- machine ----
 const clients = new Set<WebSocket>()
@@ -62,8 +71,22 @@ const updater = new Updater({
   emit,
 })
 const presetFile = path.join(DATA, 'presets.json')
+const core = coreHandlers(controller)
+const sMax = () => Number((last.get('settings') as { settings?: Record<number, string> } | undefined)?.settings?.[30]) || 1000
+const cap = () => users.settings.powerCap
 const handlers: Record<string, (a: any) => unknown> = {
-  ...coreHandlers(controller),
+  ...core,
+  // The owner's power cap applies to everything that can fire the laser from this box.
+  'job.start': (a: { lines: string[]; name: string; where: 'pc' | 'device' }) => core['job.start']({ ...a, lines: capPower(a.lines, cap(), sMax()).lines }),
+  send: (a: { text: string }) => core.send({ text: capPower([a.text], cap(), sMax()).lines[0] }),
+  pulse: (a: { pct: number; maxS: number }) => core.pulse({ ...a, pct: Math.min(a.pct, cap()) }),
+  override: (a: { kind: 'feed' | 'spindle' | 'rapid'; pct: number }) => core.override({ ...a, pct: a.kind === 'spindle' && cap() < 100 ? Math.min(a.pct, 100) : a.pct }),
+  'admin.settings.get': () => users.settings,
+  'admin.settings.set': (a: { powerCap?: number }) => (users.setSettings(a), users.settings),
+  'admin.users.list': () => users.list(),
+  'admin.users.create': (a: { name: string; password: string; role: Role }) => (users.create(a.name, a.password, a.role), users.list()),
+  'admin.users.update': (a: { name: string; password?: string; role?: Role; disabled?: boolean }) => (users.update(a.name, a), users.list()),
+  'admin.users.remove': (a: { name: string }) => (users.remove(a.name), users.list()),
   'presets.load': async () => {
     try {
       return JSON.parse(await fs.readFile(presetFile, 'utf8'))
@@ -123,7 +146,28 @@ function addViewer(res: http.ServerResponse) {
 
 // ---- web ----
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.woff': 'font/woff', '.woff2': 'font/woff2', '.json': 'application/json', '.svg': 'image/svg+xml', '.map': 'application/json' }
-const LOCKED = `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Ember</title><body style="font:16px system-ui;background:#14161a;color:#ddd;padding:3em;max-width:34em"><h2>Ember Laser Studio</h2><p>Open the link that was printed when the server started (it ends in <code>/?token=…</code>), or run <code>cat ${tokenFile.replace(/</g, '')}</code> on the laser box.</p>`
+const LOCKED = `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Ember</title><body style="font:16px system-ui;background:#14161a;color:#ddd;padding:3em;max-width:34em"><h2>Ember Laser Studio</h2><p>To set this box up, open the private link that was printed when the server started (it ends in <code>/?token=…</code>), or run <code>cat ${tokenFile.replace(/</g, '')}</code> on the laser box.</p>`
+const page = (title: string, body: string, js: string) =>
+  `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Ember</title><body style="font:16px system-ui;background:#14161a;color:#ddd;display:grid;place-items:center;min-height:90vh;margin:0"><form id=f style="width:min(22em,90vw);display:grid;gap:12px"><h2 style="margin:0">🔥 Ember Laser Studio</h2><div style="opacity:.75">${title}</div>${body}<button style="padding:12px;border:0;border-radius:6px;background:#ff5a1f;color:#fff;font:600 16px system-ui">Continue</button><div id=e style="color:#ff8a7a;min-height:1.2em"></div></form><script>${js}</script>`
+const inp = 'style="padding:12px;border-radius:6px;border:1px solid #444;background:#1d2026;color:#eee;font:16px system-ui"'
+const LOGIN = page('Sign in', `<input name=name placeholder="Name" autocomplete=username autofocus ${inp}><input name=password type=password placeholder="Password" autocomplete=current-password ${inp}>`, `f.onsubmit=async e=>{e.preventDefault();const r=await fetch('/api/login',{method:'POST',body:JSON.stringify({name:f.name.value,password:f.password.value})});const d=await r.json();if(d.ok)location='/';else e2.textContent=d.error};const e2=document.getElementById('e')`)
+const SETUP = page('Welcome. Create the owner account for this laser. You can add other people later from the Admin page.', `<input name=name placeholder="Your name" autocomplete=username autofocus ${inp}><input name=password type=password placeholder="Choose a password" autocomplete=new-password ${inp}>`, `f.onsubmit=async e=>{e.preventDefault();const r=await fetch('/api/setup',{method:'POST',body:JSON.stringify({name:f.name.value,password:f.password.value})});const d=await r.json();if(d.ok)location='/';else e2.textContent=d.error};const e2=document.getElementById('e')`)
+const json = (res: http.ServerResponse, code: number, body: unknown, headers: Record<string, string> = {}) => {
+  res.writeHead(code, { 'Content-Type': 'application/json', ...headers })
+  res.end(JSON.stringify(body))
+}
+const readBody = (req: http.IncomingMessage) =>
+  new Promise<any>((resolve) => {
+    let b = ''
+    req.on('data', (d) => (b += d).length > 10_000 && req.destroy())
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(b || '{}'))
+      } catch {
+        resolve({})
+      }
+    })
+  })
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -133,14 +177,51 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(302, { 'Set-Cookie': `${COOKIE}=${encodeURIComponent(t)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`, Location: '/' })
       return res.end()
     }
-    if (!authed(req)) {
-      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' })
-      return res.end(LOCKED)
+    if (url.pathname === '/api/login' && req.method === 'POST') {
+      const b = await readBody(req)
+      try {
+        return json(res, 200, { ok: true }, { 'Set-Cookie': setSid(users.login(String(b.name ?? ''), String(b.password ?? ''), ipOf(req))) })
+      } catch (e) {
+        return json(res, 200, { ok: false, error: (e as Error).message })
+      }
+    }
+    if (url.pathname === '/api/setup' && req.method === 'POST') {
+      if (!ownerProof(req)) return json(res, 403, { ok: false, error: 'Open the private link first.' })
+      const b = await readBody(req)
+      try {
+        users.resetOwner(String(b.name ?? ''), String(b.password ?? ''))
+        return json(res, 200, { ok: true }, { 'Set-Cookie': setSid(users.openSession(String(b.name).trim())) })
+      } catch (e) {
+        return json(res, 200, { ok: false, error: (e as Error).message })
+      }
+    }
+    if (url.pathname === '/api/logout') {
+      users.logout(cookie(req, SID))
+      res.writeHead(302, { 'Set-Cookie': `${SID}=; Path=/; Max-Age=0`, Location: '/login' })
+      return res.end()
+    }
+    const me = userOf(req)
+    if (!me) {
+      if (users.empty) {
+        // First start: only someone holding the private link may create the owner account.
+        res.writeHead(ownerProof(req) ? 200 : 401, { 'Content-Type': 'text/html; charset=utf-8' })
+        return res.end(ownerProof(req) ? SETUP : LOCKED)
+      }
+      if (url.pathname === '/setup' && ownerProof(req)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        return res.end(SETUP.replace('Welcome. Create the owner account for this laser. You can add other people later from the Admin page.', 'Owner reset: set the admin name and a new password.'))
+      }
+      res.writeHead(url.pathname === '/login' ? 200 : 401, { 'Content-Type': 'text/html; charset=utf-8' })
+      return res.end(LOGIN)
+    }
+    if (url.pathname === '/login') {
+      res.writeHead(302, { Location: '/' })
+      return res.end()
     }
     if (url.pathname === '/camera.mjpg') return addViewer(res)
     if (url.pathname === '/api/info') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      return res.end(JSON.stringify({ server: true, camera: !!CAMERA }))
+      return res.end(JSON.stringify({ server: true, camera: !!CAMERA, me }))
     }
     let rel = decodeURIComponent(url.pathname)
     if (rel === '/') rel = '/index.html'
@@ -163,10 +244,11 @@ last.set('update', updater.state as unknown as EmberEvent)
 
 const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
-  if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || !authed(req)) return socket.destroy()
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws))
+  const sid = cookie(req, SID)
+  if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || !users.who(sid)) return socket.destroy()
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, sid))
 })
-wss.on('connection', (ws) => {
+wss.on('connection', (ws: WebSocket, sid: string) => {
   clients.add(ws)
   for (const e of last.values()) ws.send(JSON.stringify({ event: e }))
   ws.on('close', () => clients.delete(ws))
@@ -177,9 +259,12 @@ wss.on('connection', (ws) => {
     } catch {
       return
     }
-    const h = handlers[m.name]
+    const h = m.name === 'me' ? () => users.who(sid) : handlers[m.name]
     try {
+      const me = users.who(sid)
+      if (!me) return ws.close()
       if (!h) throw new Error(`Unknown command ${m.name}`)
+      if (!allowed(me.role, m.name)) throw new Error(me.role === 'viewer' ? 'Your account can watch but not control the laser.' : 'Only an admin can do that.')
       const result = await h(m.args)
       ws.send(JSON.stringify({ id: m.id, ok: true, result: result ?? null }))
     } catch (e) {
@@ -191,14 +276,31 @@ wss.on('connection', (ws) => {
 server.listen(PORT, '0.0.0.0', () => {
   const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address)
   console.log('Ember server is running.')
-  for (const ip of ips.length ? ips : ['localhost']) console.log(`  Open:  http://${ip}:${PORT}/?token=${TOKEN}`)
+  for (const ip of ips.length ? ips : ['localhost']) console.log(`  Open:  http://${ip}:${PORT}/${users.empty ? `?token=${TOKEN}` : ''}`)
+  if (users.empty) console.log('  First time: open the link above to create the owner account.')
   console.log(`  Camera: ${CAMERA}   Data: ${DATA}   Version: ${versionOf()}`)
   // On the box there is no screen: put the private link on the SD card's settings drive so a PC can read it.
   const linkFile = process.env.EMBER_LINKFILE
   if (linkFile) {
     const host = os.hostname()
     const base = PORT === 80 ? '' : `:${PORT}`
-    const lines = ['Your Ember box', '==============', '', 'Open this link once on each phone, tablet or computer (keep it private: it lets people run your laser):', '', `  http://${host}.local${base}/?token=${TOKEN}`, '', 'If that does not open, use the box address instead:', '', ...ips.map((ip) => `  http://${ip}${base}/?token=${TOKEN}`), '']
+    const lines = [
+      'Your Ember box',
+      '==============',
+      '',
+      'Everyone uses the laser at:',
+      '',
+      `  http://${host}.local${base}/`,
+      ...ips.map((ip) => `  http://${ip}${base}/`),
+      '',
+      'They sign in with a name and password the owner creates on the Admin page.',
+      '',
+      'OWNER LINK (keep private). Open it once to create the owner account, or to reset the owner password if it is ever lost:',
+      '',
+      `  http://${host}.local${base}/?token=${TOKEN}`,
+      ...ips.map((ip) => `  http://${ip}${base}/?token=${TOKEN}`),
+      '',
+    ]
     try {
       writeFileSync(linkFile, lines.join('\r\n'))
     } catch {

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { isRemote } from './lib/transport'
 import { buildTest, type BuiltTest, type TestId } from '../core/test/suites'
 import {
   compileDoc,
@@ -153,6 +154,10 @@ interface Actions {
   makeTest: (id: TestId, o: { speed: number; power: number; speeds: number[]; powers: number[]; thickness: number }) => Promise<void>
   lastTest: BuiltTest | null
   testOpen: boolean
+  me: { name: string; role: 'admin' | 'user' | 'viewer' } | null
+  adminOpen: boolean
+  setAdminOpen: (v: boolean) => void
+  powerCap: number
   helpOpen: string | null
   setHelpOpen: (t: string | null) => void
   setTestOpen: (v: boolean) => void
@@ -265,6 +270,10 @@ export const useStore = create<State & Actions>((set, get) => {
     userPresets: [],
     lastTest: null,
     testOpen: false,
+    me: null,
+    adminOpen: false,
+    setAdminOpen: (adminOpen) => set({ adminOpen }),
+    powerCap: 100,
     helpOpen: null,
     setHelpOpen: (helpOpen) => set({ helpOpen }),
     setTestOpen: (testOpen) => set({ testOpen }),
@@ -703,6 +712,10 @@ export async function initStore() {
   })
   const presets = (await window.ember.invoke('presets.load').catch(() => [])) as MaterialPreset[]
   useStore.setState({ userPresets: presets })
+  if (isRemote()) {
+    void fetch('/api/info').then((r) => r.json()).then((j) => useStore.setState({ me: j.me ?? null })).catch(() => undefined)
+    void window.ember.invoke('admin.settings.get').then((a) => useStore.setState({ powerCap: (a as { powerCap: number }).powerCap })).catch(() => undefined)
+  }
   void loadFonts().then(() => useStore.setState((st) => ({ assetVersion: st.assetVersion + 1 })))
 }
 

@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { useStore } from './store'
 import { GrblClient } from '../core/grbl/client'
 import { fmtTime } from './PreviewView'
+import { SlideToStart } from './SlideToStart'
+import { sanityNotes } from '../core/sanity'
 import type { Anchor } from '../core/types'
 
 const ANCHORS: { id: Anchor; label: string }[] = [
@@ -21,9 +23,10 @@ export function SendDialog() {
   const status = useStore((s) => s.status)
   const settings = useStore((s) => s.settings)
   const raw = useStore((s) => s.raw)
+  const doc = useStore((s) => s.doc)
+  const powerCap = useStore((s) => s.powerCap)
   const { openSend, setOrigin, api, setTab, notify } = useStore.getState()
   const [where, setWhere] = useState<'pc' | 'device'>('pc')
-  const [ack, setAck] = useState(false)
   const [busy, setBusy] = useState(false)
   useEscape(() => openSend(false))
   if (!open || !gen) return null
@@ -39,6 +42,8 @@ export function SendDialog() {
   ]
   const blocked = checks.slice(0, 3).some((c) => c.ok === false) || (gen.result?.warnings ?? []).some((w) => /larger than|outside/.test(w))
   const jobMode = origin.mode === 'job'
+  const used = new Set(doc.objects.map((o) => o.layerId))
+  const notes = raw ? [] : sanityNotes(doc.layers.filter((l) => l.output && used.has(l.id)), { powerCap, estimateSeconds: gen.result?.estimateSeconds ?? gen.packed.estimateSeconds })
 
   const start = async () => {
     setBusy(true)
@@ -48,7 +53,6 @@ export function SendDialog() {
     await api('job.start', { lines: all, name: gen.name, where })
     setBusy(false)
     openSend(false)
-    setAck(false)
     setTab('device')
     notify('info', where === 'device' ? 'Job sent to the ESP32. You can close the app; it keeps running.' : 'Job started.')
   }
@@ -99,13 +103,14 @@ export function SendDialog() {
           ))}
         </ul>
 
-        <label className="check safety">
-          <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-          Eye protection is on, the area is clear and ventilated, and I will stay near the machine.
-        </label>
-        <div className="modal-actions">
+        {notes.length > 0 && (
+          <ul className="checks">
+            {notes.map((n, i) => <li key={i} className={n.level === 'warn' ? 'bad' : 'meh'}>{n.level === 'warn' ? '⚠' : '•'} {n.text}</li>)}
+          </ul>
+        )}
+        <div className="modal-actions" style={{ alignItems: 'center', gap: 12 }}>
           <button onClick={() => openSend(false)}>Cancel</button>
-          <button className="primary" disabled={!ack || blocked || busy} onClick={start}>{busy ? 'Starting…' : 'Start job'}</button>
+          <SlideToStart label={busy ? 'Starting…' : blocked ? 'Fix the items above first' : 'Slide to start the laser'} disabled={blocked || busy} onDone={() => void start()} />
         </div>
       </div>
     </div>

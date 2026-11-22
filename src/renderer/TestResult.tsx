@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from './store'
+import { materialCaution } from '../core/sanity'
 import { useEscape } from './lib/useEscape'
 import { PictureEl, usePicture } from './CameraOverlay'
 import { grayOf, scoreGrid, warpToBed, type Cell } from '../core/test/scoreGrid'
@@ -224,7 +225,7 @@ function Inner() {
                 ) : (
                   <label className="field"><span>{lastTest.prompt ?? 'What did you find?'}</span><input value={written} onChange={(e) => setWritten(e.target.value)} /></label>
                 )}
-                <label className="field"><span>Material name</span><input value={name} placeholder="e.g. 3 mm birch ply" onChange={(e) => setName(e.target.value)} /></label>
+                <label className="field"><span>Material name</span><input value={name} placeholder="e.g. 3 mm birch ply" onChange={(e) => setName(e.target.value)} />{materialCaution(name) && <small className="hint">{materialCaution(name)}</small>}</label>
                 <div className="modal-actions"><button className="primary" onClick={() => void save()}>Save photo{best ? ' and make a preset' : ''}</button></div>
               </>
             )}

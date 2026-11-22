@@ -10,7 +10,7 @@ The quickest way to a first burn:
 2. In the Design tab, drop in an SVG or picture, or draw a shape from the left bar. Pictures turn into engravings; shapes get a layer: Engrave fills them, Cut follows the outline, Score draws a light line.
 3. Pick a material in the layer settings, or run a material test first (see "Material tests") if the material is new to you.
 4. Place a piece of material under the laser. Use the jog pad on the Device tab to move the head to where the design should start, then press "Set origin here".
-5. Press Send. Check the preview, use "Frame design" on the Device tab if you want to see where it will burn, then start.
+5. Press Send. Check the preview, use "Frame design" on the Device tab if you want to see where it will burn, then slide the orange slider all the way across to start. It takes a deliberate swipe, so the laser can't be started by an accidental click.
 
 Always stay with the laser while it runs. Keep a way to stop it in reach: the red STOP button, or the machine's own button.
 
@@ -58,7 +58,7 @@ In "Where the laser head is" mode the Send dialog also lets you choose which cor
 
 ## Sending and running a job
 
-Press Send, check the estimate and the warnings, then start. Warnings tell you if the design is outside the bed or the machine is not in laser mode.
+Press Send, check the estimate and the notes, then slide the slider across to start. The checklist tells you if the design is outside the bed, the machine is not connected or idle, or laser mode is off. If your layer settings look risky (very slow and hot, lines too close together, lots of passes) Ember adds up to three short notes. They never block a job; they are there so you notice.
 
 - The job bar at the bottom shows progress. Pause, resume and stop are there.
 - Live adjust (Device tab) changes speed and power while a job runs, as a percentage.
@@ -115,11 +115,22 @@ The box (an Orange Pi or similar) holds the USB connection to the laser and the 
 
 - Flash the SD card image from the GitHub "Latest SD card image" release, put it in the box and power on.
 - Before flashing, put your Wi-Fi name and password in ember-config.txt on the small EMBER partition (it shows up as a drive).
-- Open the link in MY-ACCESS-LINK.txt on that drive, or go to http://ember.local. The link sets a cookie, so you only need it once per device.
+- Open http://ember.local (or the address in MY-ACCESS-LINK.txt). The first time, use the OWNER LINK in that file to create the owner account. After that everyone just goes to the address and signs in with a name and password.
 - Device tab: connect to the laser's port. In the camera dialog choose "Camera on the laser box".
-- A job keeps running if you close the browser. Anyone with the link can start the laser, so keep the link private and never expose the box to the internet.
+- A job keeps running if you close the browser. Do not expose the box to the internet: passwords are sent unencrypted on your own network.
+- Add people, give them roles and set a power cap on the Admin page (see "Admin: people and settings").
 
 More detail is in SERVER.md.
+
+## Admin: people and settings
+
+Only the owner and other admins see the 👤 Admin button (laser box only).
+
+- People: add a person with a name and password. Pick a role: Admin can do everything, User can design and run jobs, Viewer can only watch the camera and progress (and press STOP). Switch someone off to lock them out without deleting them, or reset their password.
+- There is always at least one admin. You can't delete or demote the last one.
+- Power cap: the most laser power any job from this box can use, as a percentage. Jobs asking for more are quietly lowered to the cap. It also limits the test dot and live power adjust. 100 means no cap.
+- Updates and writing machine settings ($ settings) are admin-only.
+- Forgot the owner password? Open the OWNER LINK from the file on the EMBER settings drive, then go to /setup on the box (for example http://ember.local/setup). Enter the owner's name and a new password.
 
 ## Updating
 
@@ -138,7 +149,7 @@ A laser can start fires and damage eyes. Ember cannot see your material, so you 
 - Check the Preview before burning, and Frame the job to confirm placement.
 - Material tests are the safe way to learn what a new material needs. Start at low power and work upward.
 - Never burn PVC, vinyl or anything containing chlorine, or unknown plastics.
-- Ember does not limit power for you and does not yet require someone to be present when starting remotely. Do not start remote jobs unless you are at the machine.
+- Ember will not limit power unless the owner sets a power cap on the Admin page. Anyone with an account who can run jobs can start the laser from anywhere on your network, so only give accounts to people you trust and make sure someone is at the machine.
 
 ## If something goes wrong
 
@@ -148,4 +159,5 @@ A laser can start fires and damage eyes. Ember cannot see your material, so you 
 - The burn is faint: slow down or raise power, check focus with the focus test, and clean the lens.
 - Edges are scorched: raise speed, lower power, use air assist or more passes at lower power.
 - The camera overlay is crooked: run the laser calibration again, and check the camera did not move.
+- Locked out: ask the owner to reset your password on the Admin page. The owner can reset their own with the OWNER LINK (see Admin).
 - Camera on the box is blank: check it is plugged into the powered hub and choose "Camera on the laser box".
