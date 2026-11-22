@@ -15,7 +15,7 @@ async function openStream(deviceId: string): Promise<MediaStream> {
 type Pic = HTMLVideoElement | HTMLImageElement
 
 /** The camera picture: a webcam on this computer, or a network (MJPEG) stream such as the one the laser box serves. */
-function usePicture(enabled: boolean, deviceId: string, url: string) {
+export function usePicture(enabled: boolean, deviceId: string, url: string) {
   const ref = useRef<Pic | null>(null)
   const [dims, setDims] = useState({ w: 0, h: 0 })
   const [error, setError] = useState<string | null>(null)
@@ -62,7 +62,7 @@ function usePicture(enabled: boolean, deviceId: string, url: string) {
   return { ref, dims, error }
 }
 
-function PictureEl({ url, elRef, style }: { url: string; elRef: React.MutableRefObject<Pic | null>; style: React.CSSProperties }) {
+export function PictureEl({ url, elRef, style }: { url: string; elRef: React.MutableRefObject<Pic | null>; style: React.CSSProperties }) {
   return url ? (
     <img ref={elRef as React.MutableRefObject<HTMLImageElement | null>} src={url} crossOrigin="anonymous" alt="" style={style} />
   ) : (

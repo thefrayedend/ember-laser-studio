@@ -90,6 +90,7 @@ export function DesignView() {
         <input ref={fileRef} type="file" hidden multiple accept=".svg,.png,.jpg,.jpeg,.webp,.bmp,.gif,.nc,.gcode,.gc,.ngc,.txt,.ember" onChange={(e) => (void importFiles([...(e.target.files ?? [])]), (e.target.value = ''))} />
         <div className="sep" />
         <button title="Material test grid" onClick={() => setGrid(true)}><span>▦</span></button>
+        <button title="Rate a burned test with a photo / past tests" onClick={() => useStore.getState().setTestOpen(true)}><span>◩</span></button>
       </div>
       <div className="stage">
         <DesignCanvas />

@@ -150,6 +150,10 @@ interface Actions {
   generate: () => Promise<GenState | null>
   makeFrameLines: () => string[] | null
   makeTestGrid: (speeds: number[], powers: number[], kind?: 'engrave' | 'cut') => Promise<void>
+  lastTest: { kind: 'engrave' | 'cut'; speeds: number[]; powers: number[] } | null
+  testOpen: boolean
+  setTestOpen: (v: boolean) => void
+  addUserPreset: (p: MaterialPreset) => void
   openSend: (v: boolean) => void
   notify: (kind: 'info' | 'error' | 'ok', text: string) => void
   log: (dir: ConsoleLine['dir'], text: string) => void
@@ -256,6 +260,14 @@ export const useStore = create<State & Actions>((set, get) => {
     genError: null,
     raw: null,
     userPresets: [],
+    lastTest: null,
+    testOpen: false,
+    setTestOpen: (testOpen) => set({ testOpen }),
+    addUserPreset: (p) => {
+      const userPresets = [...get().userPresets, p]
+      set({ userPresets })
+      void get().api('presets.save', userPresets)
+    },
     conn: { connected: false },
     status: null,
     settings: {},
@@ -604,6 +616,7 @@ export const useStore = create<State & Actions>((set, get) => {
       const r = generateTestGrid({ machine, origin, speeds, powers, cell: kind === 'cut' ? 10 : 8, gap: kind === 'cut' ? 4 : 2, lineInterval: 0.1, mode: kind === 'cut' ? 'line' : 'fill' })
       const out = await callWorker({ type: 'parse', lines: r.lines })
       if (!out.ok) return get().notify('error', out.error)
+      set({ lastTest: { kind, speeds, powers } })
       set({ raw: { name: 'material-test-grid.nc', lines: r.lines }, gen: { result: r, packed: out.packed, lines: r.lines, name: 'material-test-grid', fromDesign: false, note: `Material test. Columns, left to right: ${speeds.map((v) => fmtU(v)).join(', ')} ${get().speedUnit}. Rows, bottom to top: ${powers.join(', ')}% power. Burn it on scrap, then pick the square that looks best.` }, tab: 'preview' })
     },
 
@@ -662,7 +675,10 @@ export const useStore = create<State & Actions>((set, get) => {
           else if (lj && jp && e.where === 'pc' && jp.name === lj.name && jp.acked > 0 && jp.acked < lj.lines.length)
             set({ resumable: { ...lj, acked: jp.acked, pos: wp ? { x: wp.x, y: wp.y } : null } })
           set({ job: null })
-          if (e.result === 'done') get().notify('ok', 'Job finished.')
+          if (e.result === 'done' && get().gen?.name === 'material-test-grid' && get().lastTest) {
+            get().notify('ok', 'Test burned. Take a photo of it to rate it.')
+            set({ testOpen: true })
+          } else if (e.result === 'done') get().notify('ok', 'Job finished.')
           else get().notify('error', `Job ${e.result}${e.reason ? `: ${e.reason}` : ''}`)
           break
         }

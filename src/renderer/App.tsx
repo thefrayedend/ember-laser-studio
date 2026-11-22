@@ -1,3 +1,4 @@
+import { TestResultDialog } from './TestResult'
 import { useEscape } from './lib/useEscape'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type Tab } from './store'
@@ -243,6 +244,7 @@ export function App() {
         {tab === 'device' && <DeviceView />}
       </main>
       <UpdateBar />
+      <TestResultDialog />
       <JobBar />
       <SendDialog />
       {machineOpen && <MachineDialog onClose={() => setMachineOpen(false)} />}
