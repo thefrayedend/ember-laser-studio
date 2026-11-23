@@ -4,8 +4,10 @@ import { App } from './App'
 import { initStore, useStore } from './store'
 import './styles.css'
 import { installTransport } from './lib/transport'
+import { applyTheme } from './lib/theme'
 
 installTransport()
+applyTheme()
 void initStore()
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

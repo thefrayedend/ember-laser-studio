@@ -18,6 +18,8 @@ export const HELP: HelpTopic[] = [
 4. Place a piece of material under the laser. Use the jog pad on the Device tab to move the head to where the design should start, then press "Set origin here".
 5. Press Send. Check the preview, use "Frame design" on the Device tab if you want to see where it will burn, then slide the orange slider all the way across to start. It takes a deliberate swipe, so the laser can't be started by an accidental click.
 
+The button in the top bar next to Help switches the colour theme: Auto follows your computer's light/dark setting, or force Light or Dark. Ember remembers it on each device.
+
 Always stay with the laser while it runs. Keep a way to stop it in reach: the red STOP button, or the machine's own button.`,
   },
   {

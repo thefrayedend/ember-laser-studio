@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTheme } from './lib/theme'
 import { textShape } from './lib/fonts'
 import { Circle, Ellipse, Image as KImage, Layer, Line, Path, Rect, Stage, Text, Transformer } from 'react-konva'
 import type Konva from 'konva'
@@ -14,7 +15,11 @@ interface View {
   oy: number
 }
 
+const DARK = { bed: '#1a1d23', bedLine: '#3a404b', gridMajor: '#2c323c', grid: '#21262e', axis: '#6b7380', anchor: '#14161a' }
+const LIGHT = { bed: '#ffffff', bedLine: '#aab2bf', gridMajor: '#d3d8e0', grid: '#eceff3', axis: '#7a8493', anchor: '#ffffff' }
+
 export function DesignCanvas() {
+  const P = useTheme() === 'light' ? LIGHT : DARK
   const wrapRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Konva.Stage>(null)
   const trRef = useRef<Konva.Transformer>(null)
@@ -240,15 +245,15 @@ export function DesignCanvas() {
         onMouseLeave={() => (panning.current = null)}
       >
         <Layer listening={true}>
-          <Rect name="bed" x={0} y={0} width={machine.bedWidth} height={machine.bedHeight} fill={camShown ? "rgba(26,29,35,0.02)" : "#1a1d23"} stroke="#3a404b" strokeWidth={1} strokeScaleEnabled={false} />
+          <Rect name="bed" x={0} y={0} width={machine.bedWidth} height={machine.bedHeight} fill={camShown ? "rgba(26,29,35,0.02)" : P.bed} stroke={P.bedLine} strokeWidth={1} strokeScaleEnabled={false} />
           {grid.map((g, i) => (
-            <Line key={i} points={g.pts} stroke={g.major ? '#2c323c' : '#21262e'} strokeWidth={1} strokeScaleEnabled={false} listening={false} />
+            <Line key={i} points={g.pts} stroke={g.major ? P.gridMajor : P.grid} strokeWidth={1} strokeScaleEnabled={false} listening={false} />
           ))}
           {[0, 50, 100, 150, 200, 250, 300, 350, 400].filter((v) => v <= machine.bedWidth).map((v) => (
-            <Text key={'x' + v} x={v + 1} y={machine.bedHeight + 2} text={String(v)} fontSize={5} fill="#6b7380" listening={false} />
+            <Text key={'x' + v} x={v + 1} y={machine.bedHeight + 2} text={String(v)} fontSize={5} fill={P.axis} listening={false} />
           ))}
           {[50, 100, 150, 200, 250, 300, 350, 400].filter((v) => v <= machine.bedHeight).map((v) => (
-            <Text key={'y' + v} x={-14} y={machine.bedHeight - v - 2} text={String(v)} fontSize={5} fill="#6b7380" listening={false} />
+            <Text key={'y' + v} x={-14} y={machine.bedHeight - v - 2} text={String(v)} fontSize={5} fill={P.axis} listening={false} />
           ))}
           <Circle x={0} y={machine.bedHeight} radius={3} fill="#ff6a2b" listening={false} />
           {doc.objects.map(renderObj)}
@@ -274,7 +279,7 @@ export function DesignCanvas() {
             anchorSize={9}
             borderStroke="#ff6a2b"
             anchorStroke="#ff6a2b"
-            anchorFill="#14161a"
+            anchorFill={P.anchor}
             keepRatio={false}
             ignoreStroke
             boundBoxFunc={(o, n) => (n.width < 2 || n.height < 2 ? o : n)}

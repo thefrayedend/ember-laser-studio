@@ -52,7 +52,8 @@ export function PreviewView() {
     c.height = size.h * dpr
     const ctx = c.getContext('2d')!
     ctx.scale(dpr, dpr)
-    ctx.clearRect(0, 0, size.w, size.h)
+    ctx.fillStyle = '#101216' // the toolpath viewer stays dark in both themes: brighter lines = more power
+    ctx.fillRect(0, 0, size.w, size.h)
     const pad = 40
     const bounds = gen?.packed.bounds
     // Raw G-code and job-origin output are in work coordinates, so frame the view around the job instead of the bed.

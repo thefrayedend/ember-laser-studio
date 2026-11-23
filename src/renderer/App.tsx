@@ -1,4 +1,5 @@
 import { AdminDialog } from './AdminDialog'
+import { nextPref, setPref, useThemePref } from './lib/theme'
 import { HelpDialog } from './HelpDialog'
 import { TestResultDialog } from './TestResult'
 import { useEscape } from './lib/useEscape'
@@ -144,6 +145,7 @@ export function App() {
   const raw = useStore((s) => s.raw)
   const objs = useStore((s) => s.doc.objects.length)
   const me = useStore((s) => s.me)
+  const themePref = useThemePref()
   const { setTab, openSend, generate, api, undo, redo, newProject, saveProject, importFiles } = useStore.getState()
   const openRef = useRef<HTMLInputElement>(null)
   const [machineOpen, setMachineOpen] = useState(false)
@@ -220,6 +222,7 @@ export function App() {
           <span className="name">{raw ? raw.name : fileName}</span>
         </div>
         <div className="spacer" />
+        <button className="ghost" onClick={() => setPref(nextPref(themePref))} title="Colour theme: click to change (Auto follows your system)">{themePref === 'light' ? '☀ Light' : themePref === 'dark' ? '🌙 Dark' : '◐ Auto'}</button>
         <button className="ghost" onClick={() => useStore.getState().setHelpOpen('start')} title="Help: how to do things">? Help</button>
         {me?.role === 'admin' && <button className="ghost" onClick={() => useStore.getState().setAdminOpen(true)} title="Admin: people and settings">👤 Admin</button>}
         {me && <a className="ghost" href="/api/logout" title="Sign out" style={{ textDecoration: 'none', alignSelf: 'center' }}>{me.name} · Sign out</a>}

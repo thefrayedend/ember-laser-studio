@@ -1,7 +1,7 @@
 {
   "name": "ember-laser-studio",
   "productName": "Ember Laser Studio",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Friendly GRBL laser design and control app with ESP32 Wi-Fi bridge support",
   "main": "dist/main/main.js",
   "private": true,
