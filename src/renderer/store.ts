@@ -16,7 +16,7 @@ import {
 } from '../core/document'
 import { importSvg } from '../core/svg/import'
 import { BUILTIN_PRESETS, type MaterialPreset } from '../core/materials'
-import { generateFrame } from '../core/gcode/generate'
+import { generateFrame, generateFrameRaw } from '../core/gcode/generate'
 import { rectPath } from '../core/geometry/path'
 import { defaultLayer, FALCON2_12W, FALCON2_22W, type GenResult, type LayerSettings, type MachineProfile, type OriginMode } from '../core/types'
 import type { MachineStatus } from '../core/grbl/protocol'
@@ -99,7 +99,10 @@ interface State {
   gen: GenState | null
   genBusy: boolean
   genError: string | null
-  raw: { name: string; lines: string[] } | null
+  /** G-code that is sent as written. jobOrigin: its 0,0 is the head position (material tests), so Ember sets zero there first. */
+  raw: { name: string; lines: string[]; jobOrigin?: boolean } | null
+  /** The machine finished a homing cycle since it connected (so bed coordinates are real). */
+  homed: boolean
 
   userPresets: MaterialPreset[]
 
@@ -267,6 +270,7 @@ export const useStore = create<State & Actions>((set, get) => {
     genBusy: false,
     genError: null,
     raw: null,
+    homed: false,
     userPresets: [],
     lastTest: null,
     testOpen: false,
@@ -616,8 +620,9 @@ export const useStore = create<State & Actions>((set, get) => {
             }
           })()
       if (!bounds) return null
-      const lines = generateFrame(bounds, machine, raw ? { mode: 'bed' } : origin)
-      if (!raw && origin.mode === 'job') {
+      // Imported G-code and tests are already in machine/work coordinates: frame them as they are.
+      const lines = raw ? generateFrameRaw(bounds) : generateFrame(bounds, machine, origin)
+      if (raw ? raw.jobOrigin : origin.mode === 'job') {
         // Set zero where the head is, trace the frame, and come home so Start uses the same origin.
         return ['G10 L20 P1 X0 Y0', ...lines, 'G0 X0 Y0']
       }
@@ -625,12 +630,13 @@ export const useStore = create<State & Actions>((set, get) => {
     },
 
     makeTest: async (id, o) => {
-      const { machine, origin } = get()
-      const t = buildTest(id, { ...o, machine, origin })
+      // Tests always start where the head is (its bottom-left corner), so they land on the scrap under it.
+      const { machine } = get()
+      const t = buildTest(id, { ...o, machine, origin: { mode: 'job', anchor: 'bl' } })
       const out = await callWorker({ type: 'parse', lines: t.result.lines })
       if (!out.ok) return get().notify('error', out.error)
       set({ lastTest: t })
-      set({ raw: { name: 'material-test.nc', lines: t.result.lines }, gen: { result: t.result, packed: out.packed, lines: t.result.lines, name: 'material-test', fromDesign: false, note: `${t.title}. ${t.note}` }, tab: 'preview' })
+      set({ raw: { name: 'material-test.nc', lines: t.result.lines, jobOrigin: true }, gen: { result: t.result, packed: out.packed, lines: t.result.lines, name: 'material-test', fromDesign: false, note: `${t.title}. ${t.note}` }, tab: 'preview' })
     },
 
     openSend: (sendOpen) => set({ sendOpen }),
@@ -651,13 +657,16 @@ export const useStore = create<State & Actions>((set, get) => {
     handleEvent: (e) => {
       switch (e.type) {
         case 'connection':
-          set({ conn: { connected: e.connected, label: e.label, kind: e.kind, deviceJobs: e.deviceJobs }, ...(e.connected ? {} : { status: null, job: null }) })
+          set({ conn: { connected: e.connected, label: e.label, kind: e.kind, deviceJobs: e.deviceJobs }, ...(e.connected ? {} : { status: null, job: null, homed: false }) })
           get().log('info', e.connected ? `Connected: ${e.label}` : `Disconnected${e.error ? `: ${e.error}` : ''}`)
           if (!e.connected && e.error) get().notify('error', `Connection lost: ${e.error}`)
           break
-        case 'status':
-          set({ status: e.status, alarm: e.status.state === 'Alarm' ? get().alarm : null })
+        case 'status': {
+          const prev = get().status?.state
+          const homed = prev === 'Home' && e.status.state === 'Idle' ? true : e.status.state === 'Alarm' ? false : get().homed
+          set({ status: e.status, alarm: e.status.state === 'Alarm' ? get().alarm : null, homed })
           break
+        }
         case 'line':
           // While a job streams, thousands of "ok" and G-code lines would bury everything else in the console.
           if (get().job && (e.text === 'ok' || e.dir === 'tx')) break

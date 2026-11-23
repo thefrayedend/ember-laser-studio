@@ -1,5 +1,5 @@
 [Unit]
-Description=Ember box - apply ember-config.txt from the SD card (Wi-Fi, name, first admin, SSH)
+Description=Ember box - apply ember-config.txt from the SD card (Wi-Fi, name, time zone, SSH)
 After=NetworkManager.service embersetup.mount ember-firstboot.service
 Wants=NetworkManager.service
 Before=network-online.target ember.service avahi-daemon.service

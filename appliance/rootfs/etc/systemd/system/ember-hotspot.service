@@ -1,0 +1,12 @@
+[Unit]
+Description=Ember box - Wi-Fi hotspot when there is no network (so the laser can still be used)
+After=NetworkManager.service ember-config.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/ember-helper hotspot-watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

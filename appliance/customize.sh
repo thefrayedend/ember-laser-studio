@@ -140,7 +140,7 @@ for s in armbian-resize-filesystem orangepi-resize-filesystem resize2fs_once rpi
   systemctl mask "$s.service" 2>/dev/null || true
 done
 systemctl enable NetworkManager.service avahi-daemon.service || true
-systemctl enable ember-firstboot.service ember-config.service ember.service
+systemctl enable ember-firstboot.service ember-config.service ember-hotspot.service ember.service
 if [ -f /etc/network/interfaces ]; then
   sed -i -E '/^\s*(auto|allow-hotplug)\s+wlan[0-9]+/d; /^\s*iface\s+wlan[0-9]+/,/^\s*$/d' /etc/network/interfaces || true
 fi

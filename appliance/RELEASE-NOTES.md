@@ -5,7 +5,7 @@
 2. Open the card's `EMBER` drive on your PC and fill in your Wi-Fi in `ember-config.txt`
    (or plug the board into your router with a cable).
 3. Put the card in the board and power it up. After about 2 minutes, put the card back in your PC: the
-   `MY-ACCESS-LINK.txt` file on the `EMBER` drive has the owner link. Open it once to create the owner account; after that everyone signs in at http://ember.local.
+   `MY-ACCESS-LINK.txt` file on the `EMBER` drive has the addresses and the owner-reset link. The first person to open http://ember.local creates the owner account.
 4. Plug the laser (and a webcam, through a powered hub) into the board's USB-C data port.
 
 Updates: when a new version is released, Ember shows an "Update available" bar. You press Install.

@@ -189,8 +189,17 @@ export class Updater {
       await fs.symlink(path.join('releases', a.version), tmpLink)
       await fs.rename(tmpLink, path.join(root, 'current'))
 
-      this.set({ phase: 'restarting', message: `Version ${a.version} is installed. Restarting…` })
-      setTimeout(() => (this.o.restart ?? (() => process.exit(0)))(), 1500) // systemd starts it again
+      // A job may have started while the update downloaded: never restart under a running laser.
+      const restart = () => {
+        if (this.o.isBusy()) {
+          this.set({ phase: 'restarting', message: `Version ${a.version} is installed. It restarts as soon as the laser is idle.` })
+          setTimeout(restart, 5000)
+          return
+        }
+        this.set({ phase: 'restarting', message: `Version ${a.version} is installed. Restarting…` })
+        setTimeout(() => (this.o.isBusy() ? restart() : (this.o.restart ?? (() => process.exit(0)))()), 1500) // systemd starts it again
+      }
+      restart()
     } catch (e) {
       await fs.rm(part, { recursive: true, force: true }).catch(() => undefined)
       this.working = false

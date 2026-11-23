@@ -1,48 +1,26 @@
 #!/usr/bin/env python3
 """
-Ember box - system helper (runs as root; the Ember server may call it through sudo).
-
-Used by systemd units:
+Ember box - system helper. Runs as root, only from these systemd units:
   firstboot        grow the root partition to fill the SD card, fresh SSH keys and machine id (once)
-  apply-config     apply ember-config.txt from the SD card's EMBER drive (Wi-Fi, name, first admin, SSH)
-  hotspot-watch    start a setup Wi-Fi hotspot when the box has no network; write MY-EMBER-ADDRESS.txt (long-running)
-
-Used by the server's admin page (`sudo ember-helper <cmd>`), all print JSON:
-  net-status | wifi-scan | wifi-connect <ssid> (password on stdin) | set-hostname <name> | reboot | shutdown | system-info
-  usb-list              the USB drives plugged into the box
-  mount-place <id>      get a USB drive ready for Ember (settings as JSON on stdin; {"reconnect": true}: the saved ones)
-  forget-place <id>     let go of it and forget its settings
-  update-share on|off <folder>   the "Ember-update" network folder (password on stdin)
-  server-update <zip>   install a new server program and restart it
+  apply-config     apply ember-config.txt from the SD card's EMBER drive (Wi-Fi, name, time zone, SSH)
+  hotspot-watch    start a Wi-Fi hotspot when the box has no network, so the laser can still be used (long-running)
 """
-import grp
 import hashlib
 import json
 import os
-import pwd
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
-import zipfile
 
 SETUP_DIR = "/embersetup"
 CONFIG_FILE = os.path.join(SETUP_DIR, "ember-config.txt")
-ADDRESS_FILE = os.path.join(SETUP_DIR, "MY-EMBER-ADDRESS.txt")
 STATE_DIR = "/var/lib/ember-sys"
-DATA_DIR = "/var/lib/ember"
-PLACES_DIR = "/etc/ember/places"
-MOUNT_ROOT = "/mnt/ember"
-SERVER_DIR = "/opt/ember/server"
 SERVICE_USER = "ember"
 WIFI_CON = "ember-wifi"
 HOTSPOT_CON = "ember-hotspot"
 HOTSPOT_PASSWORD = "ember1234"
-SCAN_CACHE = os.path.join(STATE_DIR, "wifi-scan.json")
 ADMIN_USER = "emberadmin"
-SAMBA_CONF = "/etc/samba/ember.conf"
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -91,13 +69,6 @@ def parse_config(path=CONFIG_FILE):
 
 def truthy(v):
     return str(v).strip().lower() in ("1", "yes", "y", "on", "true", "enable", "enabled")
-
-
-def service_ids():
-    try:
-        return pwd.getpwnam(SERVICE_USER).pw_uid, grp.getgrnam(SERVICE_USER).gr_gid
-    except KeyError:
-        return 0, 0
 
 
 def wifi_device():
@@ -225,17 +196,6 @@ def apply_config():
     if tz and os.path.exists(f"/usr/share/zoneinfo/{tz}"):
         run(["timedatectl", "set-timezone", tz])
 
-    # the first admin account (instead of making it on the admin page)
-    admin, pw = cfg.get("admin_name", "").strip().lower(), cfg.get("admin_password", "")
-    if admin and len(pw) >= 6:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        p = os.path.join(DATA_DIR, "initial-admin.json")
-        with open(p, "w") as f:
-            json.dump({"user": admin, "password": pw}, f)
-        uid, gid = service_ids()
-        os.chown(p, uid, gid)
-        os.chmod(p, 0o600)
-
     ssh_pw = cfg.get("ssh_password", "")
     if truthy(cfg.get("ssh", "no")) and len(ssh_pw) >= 6:
         if run(["id", ADMIN_USER]).returncode != 0:
@@ -287,72 +247,10 @@ def wifi_configure(ssid, password, hidden=False, connect=True, timeout=45):
     return {"ok": False, "message": "Could not connect: " + msg}
 
 
-def wifi_scan():
-    if hotspot_active():
-        try:
-            nets = json.load(open(SCAN_CACHE))
-            return {"ok": True, "networks": nets, "message": "List from before the setup hotspot started."}
-        except (OSError, ValueError):
-            return {"ok": True, "networks": [], "message": "Can't search while the setup hotspot is on. Type your Wi-Fi name."}
-    dev = wifi_device()
-    if not dev:
-        return {"ok": False, "networks": [], "message": "No Wi-Fi hardware found on this box."}
-    run(["nmcli", "device", "wifi", "rescan", "ifname", dev], timeout=20)
-    time.sleep(3)
-    r = run(["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", dev], timeout=30)
-    best = {}
-    for line in r.stdout.splitlines():
-        f = nm_fields(line)
-        if len(f) < 4 or not f[1]:
-            continue
-        sig = int(f[2] or 0)
-        cur = best.get(f[1])
-        if not cur or sig > cur["signal"]:
-            best[f[1]] = {"ssid": f[1], "signal": sig, "security": f[3] not in ("", "--"), "inUse": f[0] == "*"}
-    nets = sorted(best.values(), key=lambda n: -n["signal"])
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        json.dump(nets, open(SCAN_CACHE, "w"))
-    except OSError:
-        pass
-    return {"ok": True, "networks": nets}
-
-
-def net_status():
-    st = {"ok": True, "hostname": hostname(),
-          "ethernet": {"connected": False, "ip": ""},
-          "wifi": {"present": False, "connected": False, "ssid": "", "ip": "", "signal": 0},
-          "hotspot": {"active": False, "ssid": hotspot_ssid(), "password": HOTSPOT_PASSWORD}}
-    r = run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"])
-    for line in r.stdout.splitlines():
-        f = nm_fields(line)
-        if len(f) < 4:
-            continue
-        if f[1] == "ethernet" and f[2].startswith("connected"):
-            st["ethernet"] = {"connected": True, "ip": ipv4_of(f[0])}
-        if f[1] == "wifi":
-            st["wifi"]["present"] = True
-            if f[2].startswith("connected"):
-                if f[3] == HOTSPOT_CON:
-                    st["hotspot"]["active"] = True
-                else:
-                    st["wifi"].update({"connected": True, "ip": ipv4_of(f[0])})
-                    w = run(["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "device", "wifi", "list", "ifname", f[0], "--rescan", "no"])
-                    for wl in w.stdout.splitlines():
-                        wf = nm_fields(wl)
-                        if len(wf) >= 3 and wf[0] == "yes":
-                            st["wifi"].update({"ssid": wf[1], "signal": int(wf[2] or 0)})
-    return st
-
-
 def start_hotspot():
     dev = wifi_device()
     if not dev:
         return False
-    try:
-        wifi_scan()
-    except Exception:  # noqa: BLE001
-        pass
     run(["nmcli", "connection", "delete", HOTSPOT_CON])
     r = run(["nmcli", "connection", "add", "type", "wifi", "ifname", dev, "con-name", HOTSPOT_CON,
              "autoconnect", "no", "ssid", hotspot_ssid(), "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
@@ -366,27 +264,9 @@ def start_hotspot():
     return r.returncode == 0
 
 
-def write_address_file(ips):
-    """MY-EMBER-ADDRESS.txt on the SD card's EMBER drive: readable on any PC."""
-    if not os.path.ismount(SETUP_DIR) or not ips:
-        return
-    name = hostname()
-    text = ("Your Ember box\r\n================\r\n\r\n"
-            f"The app:         http://{name}.local      or  http://{ips[0]}\r\n"
-            f"The admin page:  http://{name}.local:8080 or  http://{ips[0]}:8080\r\n\r\n"
-            f"(written {time.strftime('%Y-%m-%d %H:%M')})\r\n")
-    try:
-        old = open(ADDRESS_FILE, encoding="utf-8").read().split("(written")[0]
-    except OSError:
-        old = ""
-    if old != text.split("(written")[0]:
-        with open(ADDRESS_FILE, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-
-
 def hotspot_watch():
-    """Starts the setup hotspot when the box has no network ~90 s after boot; while it runs, retries the saved
-    Wi-Fi every 5 minutes. Also keeps MY-EMBER-ADDRESS.txt on the SD card up to date."""
+    """Starts the hotspot when the box has no network ~90 s after boot; while it runs, retries the saved
+    Wi-Fi every 5 minutes. (The Ember server keeps MY-ACCESS-LINK.txt on the SD card up to date.)"""
     for _ in range(90):
         if network_ips():
             break
@@ -396,7 +276,6 @@ def hotspot_watch():
         try:
             ips = network_ips()
             if ips:
-                write_address_file(ips)
                 if hotspot_active():
                     run(["nmcli", "connection", "down", HOTSPOT_CON])
             elif not hotspot_active():
@@ -415,243 +294,9 @@ def hotspot_watch():
         time.sleep(15)
 
 
-# ----------------------------------------------------------------------------- storage places (USB drives)
-def place_paths(pid):
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,23}", pid or ""):
-        raise ValueError("bad place id")
-    return os.path.join(PLACES_DIR, pid + ".json"), os.path.join(PLACES_DIR, pid + ".cred"), os.path.join(MOUNT_ROOT, pid)
-
-
-def friendly_mount_error(text, typ):
-    t = text.lower()
-    if "permission denied" in t or "error(13)" in t or "access denied" in t:
-        return "The NAS said no: check the NAS user name and password, and that this user may use the share." if typ == "smb" else "The NAS said no: allow this box's address to read and write the exported folder."
-    if "no such file" in t or "error(2)" in t or "bad share name" in t:
-        return "That share (or folder) was not found on the NAS. Check its name."
-    if "host is down" in t or "unreachable" in t or "error(112)" in t or "could not resolve" in t or "timed out" in t or "error(113)" in t:
-        return "Could not reach the NAS. Check its name or address, and that it is switched on."
-    if "operation not supported" in t or "error(95)" in t:
-        return "The NAS does not speak that SMB version. Pick another one (or Automatic)."
-    return "Could not connect: " + text.strip()[-300:]
-
-
-def mount_place(pid):
-    """Get a USB drive (or an old-style NFS share) ready at MOUNT_ROOT/<id>. (NAS shares over SMB need no mounting:
-    the server talks to them itself.)"""
-    spec_in = json.loads(sys.stdin.read() or "{}")
-    spec_path, cred_path, mnt = place_paths(pid)
-    os.makedirs(PLACES_DIR, mode=0o700, exist_ok=True)
-    old = {}
-    if os.path.exists(spec_path):
-        old = json.load(open(spec_path))
-    spec = old if spec_in.get("reconnect") else dict(spec_in)
-    spec.pop("reconnect", None)
-    if not spec.get("type"):
-        return {"ok": False, "message": "This storage place has no settings yet. Edit it on the admin page."}
-    os.makedirs(mnt, exist_ok=True)
-    if spec["type"] == "usb":
-        if os.path.ismount(mnt):
-            dev = usb_device(spec.get("uuid", ""))
-            src = (run(["findmnt", "-n", "-o", "SOURCE", "--mountpoint", mnt]).stdout or "").strip()
-            if dev and spec_in.get("reconnect") and os.path.realpath(src) == dev:
-                return {"ok": True, "message": "Ready."}
-            release_usb(mnt)  # pulled out (or plugged in again under another name): let go of the old one
-            if not usb_device(spec.get("uuid", "")):
-                return {"ok": False, "message": "Not plugged in."}
-        ok, msg = mount_usb(spec, mnt)
-        if not ok:
-            return {"ok": False, "message": msg}
-    elif spec["type"] == "nfs":
-        if os.path.ismount(mnt):
-            if spec_in.get("reconnect"):
-                return {"ok": True, "message": "Connected."}
-            run(["umount", "-l", mnt])
-        r = run(["mount", "-t", "nfs", f"{spec['server']}:{spec['export']}", mnt, "-o", "soft,timeo=100,retrans=2"], timeout=40)
-        if r.returncode != 0:
-            return {"ok": False, "message": friendly_mount_error(r.stderr or r.stdout, "nfs")}
-    else:
-        return {"ok": False, "message": "Unknown kind of storage."}
-    with open(spec_path, "w") as f:
-        os.chmod(spec_path, 0o600)
-        json.dump(spec, f)
-    # can the server (not root) write there?
-    test = os.path.join(mnt, f".ember-test-{os.getpid()}")
-    r = run(["runuser", "-u", SERVICE_USER, "--", "sh", "-c", f"echo ok > '{test}' && rm -f '{test}'"])
-    if r.returncode != 0:
-        if spec["type"] == "usb":
-            return {"ok": True, "message": "The drive is plugged in, but Ember can only read it (it may be write-protected, or full).", "readOnly": True}
-        return {"ok": True, "message": "Connected, but Ember may not write there. On the NAS, allow this box's address to read and write the exported folder.", "readOnly": True}
-    return {"ok": True, "message": "Ready. Ember can open and save files there." if spec["type"] == "usb" else "Connected."}
-
-
-def forget_place(pid):
-    spec_path, cred_path, mnt = place_paths(pid)
-    if os.path.ismount(mnt):
-        run(["umount", "-l", mnt])
-    for p in (spec_path, cred_path):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
-    try:
-        os.rmdir(mnt)
-    except OSError:
-        pass
-    return {"ok": True}
-
-
 # ----------------------------------------------------------------------------- USB drives
-def usb_list():
-    """USB drives (their partitions) plugged into the box: never the SD card the box runs from."""
-    r = run(["lsblk", "-J", "-b", "-o", "NAME,PATH,UUID,LABEL,FSTYPE,SIZE,TRAN,TYPE,MODEL,VENDOR"], timeout=20)
-    if r.returncode != 0:
-        return {"ok": False, "message": "Could not list the USB drives: " + (r.stderr or "").strip()[-200:]}
-    drives = []
-
-    def walk(dev, usb, model):
-        usb = usb or dev.get("tran") == "usb"
-        model = model or " ".join(x for x in ((dev.get("vendor") or "").strip(), (dev.get("model") or "").strip()) if x)
-        kids = dev.get("children") or []
-        if usb and dev.get("uuid") and dev.get("fstype") and dev.get("fstype") not in ("swap", "LVM2_member", "crypto_LUKS"):
-            size = int(dev.get("size") or 0)
-            name = dev.get("label") or model or "USB drive"
-            drives.append({"uuid": dev["uuid"], "fstype": dev["fstype"], "label": dev.get("label") or "", "name": name,
-                           "size": size, "dev": dev.get("path") or ""})
-        for k in kids:
-            walk(k, usb, model)
-
-    for d in json.loads(r.stdout or "{}").get("blockdevices", []):
-        if (d.get("name") or "").startswith(("mmcblk", "zram", "loop", "mtd")):
-            continue
-        walk(d, False, "")
-    return {"ok": True, "drives": drives}
-
-
-def usb_device(uuid):
-    p = os.path.join("/dev/disk/by-uuid", uuid)
-    return os.path.realpath(p) if uuid and "/" not in uuid and os.path.exists(p) else None
-
-
-def mount_usb(spec, mnt):
-    """Mount a USB drive so the server (not root) can read and write it. (ok, message)"""
-    dev = usb_device(spec.get("uuid", ""))
-    if not dev:
-        return False, "That USB drive is not plugged in."
-    fstype = (spec.get("fstype") or "").lower()
-    r = run(["blkid", "-o", "value", "-s", "TYPE", dev])
-    fstype = (r.stdout or "").strip().lower() or fstype
-    uid, gid = service_ids()
-    own = f"uid={uid},gid={gid},fmask=0113,dmask=0002"
-    tries = {
-        "vfat": [["mount", "-t", "vfat", "-o", f"{own},utf8,flush,noatime", dev, mnt]],
-        "exfat": [["mount", "-t", "exfat", "-o", f"{own},noatime", dev, mnt],
-                  ["mount.exfat-fuse", dev, mnt, "-o", f"uid={uid},gid={gid},umask=0002,allow_other,noatime"]],
-        "ntfs": [["mount", "-t", "ntfs3", "-o", f"uid={uid},gid={gid},umask=0002,noatime", dev, mnt],
-                 ["ntfs-3g", dev, mnt, "-o", f"uid={uid},gid={gid},umask=0002,noatime,big_writes"]],
-    }.get(fstype, [["mount", "-o", "noatime", dev, mnt]])
-    err = ""
-    for cmd in tries:
-        if not shutil.which(cmd[0]):
-            continue
-        r = run(cmd, timeout=60)
-        if r.returncode == 0 and os.path.ismount(mnt):
-            break
-        err = (r.stderr or r.stdout or "").strip()
-    if not os.path.ismount(mnt):
-        if fstype not in ("vfat", "exfat", "ntfs", "ext4", "ext3", "ext2", "btrfs", "xfs"):
-            return False, (f"The box can't read this kind of drive ({fstype or 'unknown'}). Use a drive formatted as "
-                           "exFAT, FAT32 or NTFS (as Windows formats them).")
-        if "wrong fs type" in err.lower() or "dirty" in err.lower() or "corrupt" in err.lower():
-            return False, "The USB drive needs checking: plug it into a Windows PC, let Windows repair it, then try again."
-        return False, "Could not use the USB drive: " + err[-300:]
-    if fstype not in ("vfat", "exfat", "ntfs"):
-        # a Linux-formatted drive keeps owners: let the server use its top folder
-        run(["chown", f"{uid}:{gid}", mnt])
-        run(["chmod", "u+rwx,g+rwx", mnt])
-    return True, ""
-
-
-def release_usb(mnt):
-    """The drive was pulled out: let go of it (so it can be used again when it is plugged back in)."""
-    run(["umount", "-l", mnt])
-
-
 # ----------------------------------------------------------------------------- the update folder (Samba)
-def update_share(on, folder):
-    password = sys.stdin.read().rstrip("\r\n")
-    if not shutil.which("smbd"):
-        return {"ok": False, "message": "The network-folder program (Samba) is not installed on this box."}
-    if on:
-        os.makedirs(folder, exist_ok=True)
-        uid, gid = service_ids()
-        os.chown(folder, uid, gid)
-        with open(SAMBA_CONF, "w") as f:
-            f.write(f"""# Written by the Ember admin page (App > Update folder).
-[Ember-update]
-   comment = Copy a new Ember.html here to install it
-   path = {folder}
-   valid users = {SERVICE_USER}
-   force user = {SERVICE_USER}
-   writable = yes
-   create mask = 0664
-   directory mask = 0775
-""")
-        main_conf = "/etc/samba/smb.conf"
-        text = open(main_conf).read() if os.path.exists(main_conf) else "[global]\n   workgroup = WORKGROUP\n"
-        if f"include = {SAMBA_CONF}" not in text:
-            with open(main_conf, "a") as f:
-                f.write(f"\ninclude = {SAMBA_CONF}\n")
-        if password:
-            r = run(["smbpasswd", "-a", "-s", SERVICE_USER], input_text=f"{password}\n{password}\n")
-            if r.returncode != 0:
-                return {"ok": False, "message": "Could not set the password: " + (r.stderr or r.stdout).strip()}
-            run(["smbpasswd", "-e", SERVICE_USER])
-        for s in ("smbd", "nmbd"):
-            run(["systemctl", "enable", s])
-            run(["systemctl", "restart", s])
-        return {"ok": True, "message": f"The update folder is on: \\\\{hostname()}\\Ember-update (sign in as {SERVICE_USER})."}
-    with open(SAMBA_CONF, "w") as f:
-        f.write("# The Ember update folder is switched off (admin page > App).\n")
-    for s in ("smbd", "nmbd"):
-        run(["systemctl", "disable", "--now", s])
-    return {"ok": True, "message": "The update folder is off."}
-
-
 # ----------------------------------------------------------------------------- the server program itself
-def server_update(zip_path):
-    try:
-        z = zipfile.ZipFile(zip_path)
-    except (OSError, zipfile.BadZipFile):
-        return {"ok": False, "message": "That is not a zip file."}
-    names = z.namelist()
-    prefix = ""
-    main = [n for n in names if n.endswith("ember_server.py")]
-    if not main:
-        return {"ok": False, "message": "That zip has no Ember server in it (ember_server.py)."}
-    prefix = main[0][: -len("ember_server.py")]
-    if not any(n.startswith(prefix + "ember/") for n in names) or any(".." in n or n.startswith("/") for n in names):
-        return {"ok": False, "message": "That zip doesn't look like a Ember server."}
-    new = SERVER_DIR + ".new"
-    shutil.rmtree(new, ignore_errors=True)
-    tmp = tempfile.mkdtemp()
-    z.extractall(tmp)
-    shutil.copytree(os.path.join(tmp, prefix) if prefix else tmp, new)
-    shutil.rmtree(tmp, ignore_errors=True)
-    r = run(["python3", "-m", "py_compile", os.path.join(new, "ember_server.py")])
-    if r.returncode != 0:
-        shutil.rmtree(new, ignore_errors=True)
-        return {"ok": False, "message": "The new server program has an error: " + r.stderr.strip()[-300:]}
-    old = SERVER_DIR + ".previous"
-    shutil.rmtree(old, ignore_errors=True)
-    if os.path.isdir(SERVER_DIR):
-        os.rename(SERVER_DIR, old)
-    os.rename(new, SERVER_DIR)
-    run(["chown", "-R", "root:root", SERVER_DIR])
-    run(["systemd-run", "--on-active=2", "systemctl", "restart", "ember.service"])
-    version = open(os.path.join(SERVER_DIR, "VERSION")).read().strip() if os.path.exists(os.path.join(SERVER_DIR, "VERSION")) else "?"
-    return {"ok": True, "message": f"Server {version} installed. It restarts now: reload this page in a few seconds."}
-
-
 # ----------------------------------------------------------------------------- system
 def set_hostname(name):
     name = re.sub(r"[^a-z0-9-]", "", name.lower())[:32]
@@ -672,50 +317,11 @@ def set_hostname(name):
     return {"ok": True, "message": f"Renamed: the app is now at http://{name}.local"}
 
 
-def system_info():
-    info = {"ok": True}
-    try:
-        info["model"] = open("/proc/device-tree/model").read().strip("\x00\n ")
-    except OSError:
-        pass
-    try:
-        for line in open("/etc/os-release"):
-            if line.startswith("PRETTY_NAME="):
-                info["os"] = line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    try:
-        up = float(open("/proc/uptime").read().split()[0])
-        d, h, m = int(up // 86400), int(up % 86400 // 3600), int(up % 3600 // 60)
-        info["uptime"] = (f"{d} days " if d else "") + f"{h}h {m}m"
-    except OSError:
-        pass
-    temps = []
-    for z in sorted(os.listdir("/sys/class/thermal")) if os.path.isdir("/sys/class/thermal") else []:
-        try:
-            temps.append(int(open(f"/sys/class/thermal/{z}/temp").read()) / 1000)
-        except (OSError, ValueError):
-            pass
-    if temps:
-        info["temp"] = f"{max(temps):.0f} °C"
-    try:
-        mem = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
-        info["memory"] = f"{(mem['MemTotal'] - mem['MemAvailable']) / 1024:.0f} MB used of {mem['MemTotal'] / 1024:.0f} MB"
-    except (OSError, KeyError, ValueError):
-        pass
-    try:
-        s = os.statvfs("/")
-        info["disk"] = f"{s.f_bavail * s.f_frsize / 1e9:.1f} GB free of {s.f_blocks * s.f_frsize / 1e9:.1f} GB"
-    except OSError:
-        pass
-    return info
-
-
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
-    cmd, args = sys.argv[1], sys.argv[2:]
+    cmd = sys.argv[1]
     try:
         if cmd == "firstboot":
             firstboot()
@@ -723,34 +329,6 @@ def main():
             apply_config()
         elif cmd == "hotspot-watch":
             hotspot_watch()
-        elif cmd == "net-status":
-            out(net_status())
-        elif cmd == "wifi-scan":
-            out(wifi_scan())
-        elif cmd == "wifi-connect" and args:
-            out(wifi_configure(args[0], sys.stdin.read().rstrip("\r\n")))
-        elif cmd == "set-hostname" and args:
-            out(set_hostname(args[0]))
-        elif cmd == "system-info":
-            out(system_info())
-        elif cmd == "mount-place" and args:
-            out(mount_place(args[0]))
-        elif cmd == "usb-list":
-            out(usb_list())
-        elif cmd == "forget-place" and args:
-            out(forget_place(args[0]))
-        elif cmd == "update-share" and len(args) == 2:
-            out(update_share(args[0] == "on", args[1]))
-        elif cmd == "server-update" and args:
-            out(server_update(args[0]))
-        elif cmd == "reboot":
-            out({"ok": True, "message": "Restarting. The box is back in about a minute."})
-            sys.stdout.flush()
-            run(["systemd-run", "--on-active=1", "systemctl", "reboot"])
-        elif cmd == "shutdown":
-            out({"ok": True, "message": "Shutting down. Unplug and plug the box in to start it again."})
-            sys.stdout.flush()
-            run(["systemd-run", "--on-active=1", "systemctl", "poweroff"])
         else:
             out({"ok": False, "message": f"unknown command {cmd}"})
             sys.exit(2)

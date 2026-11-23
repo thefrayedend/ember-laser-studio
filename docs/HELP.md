@@ -58,6 +58,8 @@ In the Send dialog, "Where does the design go?" offers "Where the laser head is"
 
 In "Where the laser head is" mode the Send dialog also lets you choose which corner or the centre of the design sits on the head.
 
+"Same spot as on the bed" only lines up after the machine has homed: press Home on the Device tab first (the Send dialog reminds you). Until then the machine does not know where its bed is.
+
 ## Sending and running a job
 
 Press Send, check the estimate and the notes, then slide the slider across to start. The checklist tells you if the design is outside the bed, the machine is not connected or idle, or laser mode is off. If your layer settings look risky (very slow and hot, lines too close together, lots of passes) Ember adds up to three short notes. They never block a job; they are there so you notice.
@@ -65,7 +67,10 @@ Press Send, check the estimate and the notes, then slide the slider across to st
 - The job bar at the bottom shows progress. Pause, resume and stop are there.
 - Live adjust (Device tab) changes speed and power while a job runs, as a percentage.
 - If a job is stopped or the connection drops, Ember remembers the line it reached. The Device tab offers "Resume" that moves back to that spot and carries on. Do not move the material in between.
-- STOP resets the controller immediately. It is software, so also know where the machine's own stop is.
+- Stop (on the job bar) first brings the head to a smooth halt with the laser off, then clears the controller, so the machine keeps its position and Resume works.
+- STOP (red, top bar) resets the controller immediately. The machine may lose its position, so home it again afterwards. It is software, so also know where the machine's own stop is.
+- The Send dialog checks that the machine's full-power value ($30) matches the profile. If they differ every power would be wrong, so Ember blocks the job and offers a one-click fix.
+- Imported G-code runs exactly as written. If it uses M3 (constant power) instead of M4, the laser can stay on if the connection drops, so stay at the machine.
 
 ## Material tests
 
@@ -117,12 +122,11 @@ The box (an Orange Pi or similar) holds the USB connection to the laser and the 
 
 - Flash the SD card image from the GitHub "Latest SD card image" release, put it in the box and power on.
 - Before flashing, put your Wi-Fi name and password in ember-config.txt on the small EMBER partition (it shows up as a drive).
-- Open http://ember.local (or the address in MY-ACCESS-LINK.txt). The first time, use the OWNER LINK in that file to create the owner account. After that everyone just goes to the address and signs in with a name and password.
+- No Wi-Fi details or cable? About 2 minutes after power-on the box starts its own Wi-Fi called Ember-Setup-.... (password ember1234). Join it and open http://10.42.0.1 to use the laser. It goes back to your Wi-Fi once that works.
+- Open http://ember.local (or an address from MY-ACCESS-LINK.txt). The first person to open it creates the owner account. After that everyone goes to the address and signs in with a name and password.
 - Device tab: connect to the laser's port. In the camera dialog choose "Camera on the laser box".
 - A job keeps running if you close the browser. Do not expose the box to the internet: passwords are sent unencrypted on your own network.
 - Add people, give them roles and set a power cap on the Admin page (see "Admin: people and settings").
-
-More detail is in SERVER.md.
 
 ## Admin: people and settings
 
@@ -132,7 +136,7 @@ Only the owner and other admins see the 👤 Admin button (laser box only).
 - There is always at least one admin. You can't delete or demote the last one.
 - Power cap: the most laser power any job from this box can use, as a percentage. Jobs asking for more are quietly lowered to the cap. It also limits the test dot and live power adjust. 100 means no cap.
 - Updates and writing machine settings ($ settings) are admin-only.
-- Forgot the owner password? Open the OWNER LINK from the file on the EMBER settings drive, then go to /setup on the box (for example http://ember.local/setup). Enter the owner's name and a new password.
+- Forgot the owner password? Put the SD card in a computer and open MY-ACCESS-LINK.txt on the EMBER drive. Put the card back, open the OWNER LINK from that file, then go to /setup on the box (for example http://ember.local/setup) and enter the owner's name and a new password.
 
 ## Updating
 
@@ -158,6 +162,9 @@ A laser can start fires and damage eyes. Ember cannot see your material, so you 
 - The screen looks old after an update: reload the page (Ctrl+F5). On Windows, run the launcher again so it rebuilds.
 - The port is missing: press Rescan, try another cable, and on Linux check the dialout group.
 - The head does not stop where expected: set the position again with "Set origin here", and check that the machine profile matches your laser.
+- A picture comes out with dark marks or stutters: the laser cannot be fed lines fast enough. Lower the speed, or use a dither mode (Floyd-Steinberg, Atkinson) instead of grayscale. The Send dialog warns about this.
+- The design lands in the wrong place with "Same spot as on the bed": home the machine first.
+- The aiming dot does not appear: check $32=1 (laser mode) and that the machine is Idle, not in Alarm.
 - The burn is faint: slow down or raise power, check focus with the focus test, and clean the lens.
 - Edges are scorched: raise speed, lower power, use air assist or more passes at lower power.
 - The camera overlay is crooked: run the laser calibration again, and check the camera did not move.

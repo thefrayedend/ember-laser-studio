@@ -146,7 +146,6 @@ function addViewer(res: http.ServerResponse) {
 
 // ---- web ----
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.woff': 'font/woff', '.woff2': 'font/woff2', '.json': 'application/json', '.svg': 'image/svg+xml', '.map': 'application/json' }
-const LOCKED = `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Ember</title><body style="font:16px system-ui;background:#14161a;color:#ddd;padding:3em;max-width:34em"><h2>Ember Laser Studio</h2><p>To set this box up, open the private link that was printed when the server started (it ends in <code>/?token=…</code>), or run <code>cat ${tokenFile.replace(/</g, '')}</code> on the laser box.</p>`
 const page = (title: string, body: string, js: string) =>
   `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Ember</title><body style="font:16px system-ui;background:#14161a;color:#ddd;display:grid;place-items:center;min-height:90vh;margin:0"><form id=f style="width:min(22em,90vw);display:grid;gap:12px"><h2 style="margin:0">🔥 Ember Laser Studio</h2><div style="opacity:.75">${title}</div>${body}<button style="padding:12px;border:0;border-radius:6px;background:#ff5a1f;color:#fff;font:600 16px system-ui">Continue</button><div id=e style="color:#ff8a7a;min-height:1.2em"></div></form><script>${js}</script>`
 const inp = 'style="padding:12px;border-radius:6px;border:1px solid #444;background:#1d2026;color:#eee;font:16px system-ui"'
@@ -186,7 +185,9 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (url.pathname === '/api/setup' && req.method === 'POST') {
-      if (!ownerProof(req)) return json(res, 403, { ok: false, error: 'Open the private link first.' })
+      // The very first account can be made by whoever opens the box first (like a new router or OctoPrint);
+      // after that, only the owner link can reset the owner.
+      if (!users.empty && !ownerProof(req)) return json(res, 403, { ok: false, error: 'Open the owner link first.' })
       const b = await readBody(req)
       try {
         users.resetOwner(String(b.name ?? ''), String(b.password ?? ''))
@@ -203,9 +204,9 @@ const server = http.createServer(async (req, res) => {
     const me = userOf(req)
     if (!me) {
       if (users.empty) {
-        // First start: only someone holding the private link may create the owner account.
-        res.writeHead(ownerProof(req) ? 200 : 401, { 'Content-Type': 'text/html; charset=utf-8' })
-        return res.end(ownerProof(req) ? SETUP : LOCKED)
+        // First start: the first person to open the box creates the owner account.
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        return res.end(SETUP)
       }
       if (url.pathname === '/setup' && ownerProof(req)) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -245,7 +246,10 @@ last.set('update', updater.state as unknown as EmberEvent)
 const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
   const sid = cookie(req, SID)
-  if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || !users.who(sid)) return socket.destroy()
+  // Refuse sockets opened by other web pages (the browser sends their Origin).
+  const origin = req.headers.origin
+  const sameOrigin = !origin || (() => { try { return new URL(origin).host === req.headers.host } catch { return false } })()
+  if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || !users.who(sid) || !sameOrigin) return socket.destroy()
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, sid))
 })
 wss.on('connection', (ws: WebSocket, sid: string) => {
@@ -265,6 +269,8 @@ wss.on('connection', (ws: WebSocket, sid: string) => {
       if (!me) return ws.close()
       if (!h) throw new Error(`Unknown command ${m.name}`)
       if (!allowed(me.role, m.name)) throw new Error(me.role === 'viewer' ? 'Your account can watch but not control the laser.' : 'Only an admin can do that.')
+      // Typing "$32=0" or "$RST=*" in the console changes machine settings too: admin only, like the settings panel.
+      if (m.name === 'send' && me.role !== 'admin' && /^\s*\$(\d+\s*=|N\d|RST|I=|SLP)/i.test(String((m.args as { text?: string })?.text ?? ''))) throw new Error('Only an admin can change machine settings.')
       const result = await h(m.args)
       ws.send(JSON.stringify({ id: m.id, ok: true, result: result ?? null }))
     } catch (e) {
@@ -273,40 +279,56 @@ wss.on('connection', (ws: WebSocket, sid: string) => {
   })
 })
 
-server.listen(PORT, '0.0.0.0', () => {
-  const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address)
-  console.log('Ember server is running.')
-  for (const ip of ips.length ? ips : ['localhost']) console.log(`  Open:  http://${ip}:${PORT}/${users.empty ? `?token=${TOKEN}` : ''}`)
-  if (users.empty) console.log('  First time: open the link above to create the owner account.')
-  console.log(`  Camera: ${CAMERA}   Data: ${DATA}   Version: ${versionOf()}`)
-  // On the box there is no screen: put the private link on the SD card's settings drive so a PC can read it.
+const lanIps = () => Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address)
+
+// On the box there is no screen: put the addresses and the owner link on the SD card's settings drive so a PC can
+// read them. Wi-Fi often comes up after the server, so rewrite the file whenever the addresses change.
+let linkWritten = ''
+function writeLinkFile() {
   const linkFile = process.env.EMBER_LINKFILE
-  if (linkFile) {
-    const host = os.hostname()
-    const base = PORT === 80 ? '' : `:${PORT}`
-    const lines = [
-      'Your Ember box',
-      '==============',
-      '',
-      'Everyone uses the laser at:',
-      '',
-      `  http://${host}.local${base}/`,
-      ...ips.map((ip) => `  http://${ip}${base}/`),
-      '',
-      'They sign in with a name and password the owner creates on the Admin page.',
-      '',
-      'OWNER LINK (keep private). Open it once to create the owner account, or to reset the owner password if it is ever lost:',
-      '',
-      `  http://${host}.local${base}/?token=${TOKEN}`,
-      ...ips.map((ip) => `  http://${ip}${base}/?token=${TOKEN}`),
-      '',
-    ]
-    try {
-      writeFileSync(linkFile, lines.join('\r\n'))
-    } catch {
-      /* the settings drive may not be mounted */
-    }
+  if (!linkFile) return
+  const ips = lanIps()
+  const host = os.hostname()
+  const base = PORT === 80 ? '' : `:${PORT}`
+  const lines = [
+    'Your Ember box',
+    '==============',
+    '',
+    'Everyone uses the laser at:',
+    '',
+    `  http://${host}.local${base}/`,
+    ...ips.map((ip) => `  http://${ip}${base}/`),
+    '',
+    'They sign in with a name and password the owner creates on the Admin page.',
+    '',
+    'The first person to open the address creates the owner account.',
+    '',
+    'OWNER LINK (keep private). Only needed to reset the owner password if it is ever lost:',
+    '',
+    `  http://${host}.local${base}/?token=${TOKEN}`,
+    ...ips.map((ip) => `  http://${ip}${base}/?token=${TOKEN}`),
+    '',
+    'No network? The box starts its own Wi-Fi called Ember-Setup-.... (password ember1234). Join it and open http://10.42.0.1',
+    '',
+  ].join('\r\n')
+  if (lines === linkWritten) return
+  try {
+    writeFileSync(linkFile, lines)
+    linkWritten = lines
+  } catch {
+    /* the settings drive may not be mounted */
   }
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  const ips = lanIps()
+  console.log('Ember server is running.')
+  for (const ip of ips.length ? ips : ['localhost']) console.log(`  Open:  http://${ip}:${PORT}/`)
+  if (users.empty) console.log('  First time: open it and create the owner account.')
+  console.log(`  Owner reset link: http://localhost:${PORT}/?token=${TOKEN}`)
+  console.log(`  Camera: ${CAMERA}   Data: ${DATA}   Version: ${versionOf()}`)
+  writeLinkFile()
+  setInterval(writeLinkFile, 30_000).unref()
 })
 
 const shutdown = async () => {

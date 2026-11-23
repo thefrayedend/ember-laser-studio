@@ -80,7 +80,8 @@ export function buildResume(lines: string[], from: number): string[] {
   if (m.coolant !== 'off') out.push(m.coolant)
   out.push(`G0 X${f3(m.x)} Y${f3(m.y)}`)
   if (m.rel) out.push('G91')
-  const tail = lines.slice(from)
+  // Never replay "set origin here" (G10): the head has moved since, so it would shift the rest of the job.
+  const tail = lines.slice(from).filter((l) => !/^\s*G10(?!\d)/i.test(clean(l)))
   if (m.motion === 1) out.push(m.f ? `G1 F${f3(m.f)}` : 'G1')
   else if (m.f) out.push(`F${f3(m.f)}`)
   if (m.spindle === 'M4') out.push(`M4 S${f3(m.s)}`)

@@ -49,9 +49,20 @@ interface Pending {
   job: boolean
   text: string
   jobIndex: number
+  sync: boolean
 }
 
 const zero = (): Vec3 => ({ x: 0, y: 0, z: 0 })
+
+/**
+ * Lines GRBL must receive on their own: `$` system commands and G-codes that write EEPROM (G10, G28.1, G30.1).
+ * The GRBL docs warn that EEPROM writes pause the serial interrupt, so characters arriving at that moment are lost.
+ * These are sent only when nothing else is in flight, and nothing follows until they are acknowledged.
+ */
+export const isSyncLine = (text: string) => /^\$/.test(text) || /G10(?!\d)|G28\.1|G30\.1/i.test(text.replace(/\s+/g, ''))
+
+/** GRBL's line buffer holds 80 characters (after it strips spaces and comments). */
+export const GRBL_LINE_MAX = 80
 
 export class GrblClient {
   status: MachineStatus = {
@@ -87,6 +98,8 @@ export class GrblClient {
   private statusSeq = 0
   private finalAckSeq = -1
   private lastProgressEmit = 0
+  /** After a reset, ignore stray "ok"/"error" for lines from before it until GRBL says hello again. */
+  private resyncUntil = 0
 
   constructor(
     readonly conn: Connection,
@@ -187,6 +200,8 @@ export class GrblClient {
           mpos: s.mpos ?? prev.mpos,
           wpos: s.wpos ?? prev.wpos,
           overrides: s.overrides ?? prev.overrides,
+          pins: s.pins, // GRBL leaves Pn out when nothing is triggered
+          subState: s.subState,
         }
         if (s.mpos && !s.wpos) next.wpos = sub(s.mpos, next.wco)
         if (s.wpos && !s.mpos) next.mpos = add(s.wpos, next.wco)
@@ -216,16 +231,20 @@ export class GrblClient {
         break
       case 'welcome':
         // A soft reset (or power-up) wipes GRBL's buffers.
+        // A reset we asked for keeps commands typed since; an unexpected one (power cycle) drops them.
+        if (!this.resyncUntil) this.manual = []
+        this.resyncUntil = 0
         this.pending = []
         this.inFlight = 0
-        this.manual = []
         if (this.jobState !== 'idle') this.finishJob('aborted', 'Controller reset')
         this.emit('welcome', { version: ev.version })
+        this.pump()
         break
     }
   }
 
   private onAck(err: { code: number; message: string } | null) {
+    if (this.resyncUntil > Date.now()) return
     const p = this.pending.shift()
     if (!p) return
     this.inFlight -= p.len
@@ -248,13 +267,22 @@ export class GrblClient {
 
   // ---------- sending ----------
 
+  /** True when the next line may go out under GRBL's 128-byte character-counting rule. */
+  private canSend(text: string, len: number) {
+    if (this.resyncUntil > Date.now()) return false
+    // A sync line is waiting for its ok: hold everything behind it.
+    if (this.pending.some((p) => p.sync)) return false
+    if (isSyncLine(text)) return this.inFlight === 0
+    return this.inFlight + len <= this.rxSize
+  }
+
   private pump() {
     if (!this.conn.isOpen) return
     // Manual lines first. They only exist when no job is running (send() enforces that).
     while (this.manual.length) {
       const text = this.manual[0]
       const len = text.length + 1
-      if (this.inFlight + len > this.rxSize) return
+      if (!this.canSend(text, len)) return
       this.manual.shift()
       this.writeLine(text, len, false, -1)
     }
@@ -262,14 +290,14 @@ export class GrblClient {
     while (this.jobNext < this.job.length) {
       const text = this.job[this.jobNext]
       const len = text.length + 1
-      if (this.inFlight + len > this.rxSize) return
+      if (!this.canSend(text, len)) return
       this.writeLine(text, len, true, this.jobNext)
       this.jobNext++
     }
   }
 
   private writeLine(text: string, len: number, job: boolean, jobIndex: number) {
-    this.pending.push({ len, job, text, jobIndex })
+    this.pending.push({ len, job, text, jobIndex, sync: isSyncLine(text) })
     this.inFlight += len
     this.conn.write(text + '\n')
     if (!job || this.jobNext % 50 === 0) this.emit('line', { dir: 'tx', text })
@@ -281,6 +309,7 @@ export class GrblClient {
     if (this.status.state === 'Disconnected') throw new Error('Not connected.')
     const text = command.trim()
     if (!text) return
+    if (cleanGcodeLine(text).length > GRBL_LINE_MAX && !text.startsWith('$')) throw new Error(`Command too long for GRBL (max ${GRBL_LINE_MAX} characters).`)
     if (text.length > 120) throw new Error('Command too long.')
     this.manual.push(text)
     this.pump()
@@ -313,6 +342,9 @@ export class GrblClient {
   }
   softReset() {
     this.rawWrite(RT.RESET)
+    this.pending = []
+    this.inFlight = 0
+    this.startResync(3000)
   }
 
   /**
@@ -321,9 +353,12 @@ export class GrblClient {
    */
   async pulseLaser(powerPct: number, maxS: number, ms = 150) {
     const s = Math.round((Math.max(0, Math.min(10, powerPct)) / 100) * maxS)
-    this.send(`M3 S${s}`)
+    // In laser mode GRBL only fires in G1/G2/G3, and M4 (dynamic) is off when nothing moves, so a dot needs G1 + M3.
+    // Afterwards: laser off and back to G0, GRBL's safe default.
+    this.send(`G1 F1000 M3 S${s}`)
     this.send(`G4 P${(Math.min(ms, 500) / 1000).toFixed(2)}`)
     this.send('M5 S0')
+    this.send('G0')
   }
 
   /** Set an override to a target percentage using GRBL's +10/+1 steps. */
@@ -360,8 +395,9 @@ export class GrblClient {
     const out: string[] = []
     lines.forEach((l, i) => {
       const c = cleanGcodeLine(l)
-      if (!c) return
-      if (c.length > 80) throw new Error(`G-code line ${i + 1} is ${c.length} characters; GRBL's limit is 80.`)
+      // "%" program markers and "/" block-delete lines are not GRBL G-code; GRBL would reject them.
+      if (!c || c === '%' || c.startsWith('/')) return
+      if (c.length > GRBL_LINE_MAX) throw new Error(`G-code line ${i + 1} is ${c.length} characters; GRBL's limit is ${GRBL_LINE_MAX}.`)
       out.push(c)
     })
     return out
@@ -407,23 +443,46 @@ export class GrblClient {
     this.abortJob(reason, 'aborted')
   }
 
+  private startResync(ms: number) {
+    this.resyncUntil = Date.now() + ms
+    setTimeout(() => {
+      if (this.resyncUntil && this.resyncUntil <= Date.now()) {
+        this.resyncUntil = 0
+        this.pump()
+      }
+    }, ms + 10)
+  }
+
   /** Immediate reset with no deceleration. Use for the on-screen emergency stop. */
   emergencyStop() {
     this.rawWrite(RT.RESET)
     this.pending = []
     this.manual = []
     this.inFlight = 0
+    this.startResync(3000)
     if (this.jobState !== 'idle') this.finishJob('aborted', 'Emergency stop')
   }
 
+  /**
+   * Feed hold (decelerate; in laser mode the beam goes off), then a soft reset to flush GRBL's buffers once the
+   * hold has finished. Resetting while still moving makes GRBL throw ALARM:3 and lose position, so wait for
+   * Hold:0 (or Idle) first, up to 2 seconds.
+   */
   private abortJob(reason: string, result: JobResult) {
     this.rawWrite(RT.HOLD)
-    // Let the hold take effect, then flush with a soft reset.
-    setTimeout(() => this.rawWrite(RT.RESET), 120)
     this.pending = []
     this.manual = []
     this.inFlight = 0
+    this.startResync(5000)
     this.finishJob(result, reason)
+    const t0 = Date.now()
+    const wait = () => {
+      const st = this.status
+      const settled = (st.state === 'Hold' && st.subState === 0) || st.state === 'Idle' || st.state === 'Alarm' || st.state === 'Disconnected'
+      if (settled || Date.now() - t0 > 2000) this.rawWrite(RT.RESET)
+      else setTimeout(wait, 50)
+    }
+    setTimeout(wait, 60)
   }
 
   private finishJob(result: JobResult, reason?: string) {

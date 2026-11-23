@@ -55,10 +55,18 @@ export function makeMapper(machine: MachineProfile, origin: OriginMode, bounds: 
 class Emitter {
   lines: string[] = []
   seconds = 0
-  private mx = 0
-  private my = 0
+  // Where the head is when the job starts is unknown, so the first move is always an explicit G0.
+  private mx = NaN
+  private my = NaN
+  /** Extent of every move in machine coordinates (includes overscan), for the bed check. */
+  ext: Rect | null = null
   private f = -1
   private s = -1
+  /** Modal motion word in effect, so repeated G1 can be left out (shorter lines stream faster). */
+  private motion: 'G0' | 'G1' | null = null
+  /** Raster statistics, for the "too many lines per second" check. */
+  rasterLines = 0
+  rasterSeconds = 0
   constructor(
     private map: Mapper,
     private maxS: number,
@@ -67,23 +75,44 @@ class Emitter {
 
   raw(l: string) {
     this.lines.push(l)
+    if (/G0*[0-3](?!\d)/i.test(l.replace(/;.*/, ''))) this.motion = null
+  }
+
+  private grow(x: number, y: number) {
+    const e = this.ext
+    if (!e) this.ext = { minX: x, maxX: x, minY: y, maxY: y }
+    else (e.minX = Math.min(e.minX, x)), (e.maxX = Math.max(e.maxX, x)), (e.minY = Math.min(e.minY, y)), (e.maxY = Math.max(e.maxY, y))
   }
 
   rapid(x: number, y: number) {
     const [mx, my] = this.map(x, y)
     if (Math.abs(mx - this.mx) < 5e-4 && Math.abs(my - this.my) < 5e-4) return
-    this.seconds += Math.hypot(mx - this.mx, my - this.my) / this.rapidMmS
+    if (Number.isFinite(this.mx)) this.seconds += Math.hypot(mx - this.mx, my - this.my) / this.rapidMmS
+    const same = (a: number, b: number) => Number.isFinite(b) && Math.abs(a - b) < 5e-4
+    let out = 'G0'
+    if (!same(mx, this.mx)) out += ` X${fmt(mx)}`
+    if (!same(my, this.my)) out += ` Y${fmt(my)}`
+    this.grow(mx, my)
     this.mx = mx
     this.my = my
-    this.lines.push(`G0 X${fmt(mx)} Y${fmt(my)}`)
+    this.motion = 'G0'
+    this.lines.push(out)
   }
 
   /** Feed move. speed in mm/s, s is the S word value (already scaled to maxS). */
   line(x: number, y: number, speedMmS: number, s: number) {
     const [mx, my] = this.map(x, y)
+    // A feed move must never start from an unknown place: position first with the laser off.
+    if (!Number.isFinite(this.mx)) this.rapid(x, y)
     const dist = Math.hypot(mx - this.mx, my - this.my)
     if (dist < 5e-4 && s === this.s) return
-    let out = `G1 X${fmt(mx)} Y${fmt(my)}`
+    // Only the words that change: GRBL keeps G1, F, S and the other axis modal. Raster rows then cost about half
+    // the bytes, which matters because USB serial can only carry ~500 short lines a second.
+    const parts: string[] = []
+    if (this.motion !== 'G1') parts.push('G1')
+    if (Math.abs(mx - this.mx) >= 5e-4 || dist < 5e-4) parts.push(`X${fmt(mx)}`)
+    if (Math.abs(my - this.my) >= 5e-4) parts.push(`Y${fmt(my)}`)
+    let out = parts.join(' ')
     if (s !== this.s) {
       out += ` S${s}`
       this.s = s
@@ -94,8 +123,10 @@ class Emitter {
       this.f = f
     }
     this.seconds += dist / speedMmS
+    this.grow(mx, my)
     this.mx = mx
     this.my = my
+    this.motion = 'G1'
     this.lines.push(out)
   }
 
@@ -232,7 +263,8 @@ function emitRaster(em: Emitter, img: PlacedImage, s: LayerSettings, maxS: numbe
       let sv = 0
       if (grayscale) {
         const dark = (255 - g) / 255
-        if (dark > 0.02) sv = Math.round(low + (full - low) * dark)
+        // 32 power levels: plenty for a diode laser, and equal neighbours merge into one longer move.
+        if (dark > 0.02) sv = Math.round(low + (full - low) * Math.round(dark * 32) / 32)
       } else if (g === 0) sv = full
       const x0 = b.minX + c * step - half
       const x1 = x0 + step
@@ -247,7 +279,11 @@ function emitRaster(em: Emitter, img: PlacedImage, s: LayerSettings, maxS: numbe
       }
     }
     const forward = !s.bidirectional || r % 2 === 0
+    const l0 = em.lines.length
+    const t0 = em.seconds
     emitRow(em, y, runs, forward, s.speed, s.overscan, (u, v) => [u, v])
+    em.rasterLines += em.lines.length - l0
+    em.rasterSeconds += em.seconds - t0
   }
   void maxS
 }
@@ -386,22 +422,6 @@ export function generate(jobs: LayerJob[], opts: GenOptions): GenResult {
     return { lines: [], bounds: null, estimateSeconds: 0, warnings }
   }
 
-  if (origin.mode === 'job') {
-    if (bounds.maxX - bounds.minX > machine.bedWidth || bounds.maxY - bounds.minY > machine.bedHeight)
-      warnings.push('Design is larger than the machine work area.')
-  } else {
-    const corners = [
-      map(bounds.minX, bounds.minY),
-      map(bounds.maxX, bounds.maxY),
-    ]
-    const xs = corners.map((c) => c[0])
-    const ys = corners.map((c) => c[1])
-    const lo = machine.originCorner.endsWith('l') ? 0 : -machine.bedWidth
-    const loY = machine.originCorner.startsWith('b') ? 0 : -machine.bedHeight
-    if (Math.min(...xs) < lo - 1e-6 || Math.max(...xs) > lo + machine.bedWidth + 1e-6 || Math.min(...ys) < loY - 1e-6 || Math.max(...ys) > loY + machine.bedHeight + 1e-6)
-      warnings.push('Design extends outside the machine work area.')
-  }
-
   em.raw('; Generated by Ember Laser Studio')
   em.raw('G21 G90 G17 G94')
   em.raw(`${opts.constantPower ? 'M3' : 'M4'} S0`)
@@ -430,6 +450,29 @@ export function generate(jobs: LayerJob[], opts: GenOptions): GenResult {
 
   em.raw('M5 S0')
   if (opts.returnToOrigin) em.raw('G0 X0 Y0')
+
+  // GRBL over USB manages roughly 400-600 short lines a second. Asking for more makes the head stutter and
+  // over-burn wherever it waits for data.
+  if (em.rasterSeconds > 1 && em.rasterLines / em.rasterSeconds > 400)
+    warnings.push(`A picture needs about ${Math.round(em.rasterLines / em.rasterSeconds)} G-code lines per second, more than the laser can be fed. Expect stutter and dark marks: lower the speed, or use a dither mode instead of grayscale.`)
+
+  // Check the real tool path (overscan included), not just the artwork: GRBL alarms or hits the frame otherwise.
+  const e = em.ext
+  if (e) {
+    if (origin.mode === 'job') {
+      if (e.maxX - e.minX > machine.bedWidth + 1e-6 || e.maxY - e.minY > machine.bedHeight + 1e-6)
+        warnings.push('Design is larger than the machine work area.')
+    } else {
+      const lo = machine.originCorner.endsWith('l') ? 0 : -machine.bedWidth
+      const loY = machine.originCorner.startsWith('b') ? 0 : -machine.bedHeight
+      const tol = 1e-3
+      if (e.minX < lo - tol || e.maxX > lo + machine.bedWidth + tol || e.minY < loY - tol || e.maxY > loY + machine.bedHeight + tol) {
+        const art = [map(bounds.minX, bounds.minY), map(bounds.maxX, bounds.maxY)]
+        const artOut = Math.min(art[0][0], art[1][0]) < lo - tol || Math.max(art[0][0], art[1][0]) > lo + machine.bedWidth + tol || Math.min(art[0][1], art[1][1]) < loY - tol || Math.max(art[0][1], art[1][1]) > loY + machine.bedHeight + tol
+        warnings.push(artOut ? 'Design extends outside the machine work area.' : 'The design is so close to the edge that the laser would run outside the work area while speeding up (overscan). Move it in a little or turn overscan down.')
+      }
+    }
+  }
   const estimate = em.seconds * 1.08
   return { lines: em.lines, bounds, estimateSeconds: estimate, warnings }
 }
@@ -451,6 +494,19 @@ export function generateFrame(bounds: Rect, machine: MachineProfile, origin: Ori
     `G0 X${fmt(pts[0][0])} Y${fmt(pts[0][1])}`,
     ...pts.slice(1).map((p) => `G1 X${fmt(p[0])} Y${fmt(p[1])} S0 F${f}`),
   ]
+}
+
+/** Frame for G-code that is already in machine/work coordinates (imported files, material tests): no mapping. */
+export function generateFrameRaw(b: Rect, feedMmS = 100): string[] {
+  const f = Math.round(feedMmS * 60)
+  const pts = [
+    [b.minX, b.minY],
+    [b.maxX, b.minY],
+    [b.maxX, b.maxY],
+    [b.minX, b.maxY],
+    [b.minX, b.minY],
+  ]
+  return ['G21 G90', 'M5', `G0 X${fmt(pts[0][0])} Y${fmt(pts[0][1])}`, ...pts.slice(1).map((p) => `G1 X${fmt(p[0])} Y${fmt(p[1])} S0 F${f}`)]
 }
 
 export interface TestGridOptions {

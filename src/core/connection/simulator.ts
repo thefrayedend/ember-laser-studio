@@ -200,7 +200,7 @@ export class SimulatorConnection implements Connection {
   private reportStatus() {
     const n = this.statusCount++
     const f = (v: number) => v.toFixed(3)
-    let out = `<${this.state}|MPos:${f(this.mx)},${f(this.my)},0.000|Bf:${this.plannerSize - this.planner.length},${Math.max(0, this.rxSize - this.rxUsed)}`
+    let out = `<${this.state === 'Hold' ? 'Hold:0' : this.state}|MPos:${f(this.mx)},${f(this.my)},0.000|Bf:${this.plannerSize - this.planner.length},${Math.max(0, this.rxSize - this.rxUsed)}`
     out += `|FS:${Math.round(this.current ? this.current.feedMmMin : 0)},${this.laserPower()}`
     if (n % 10 === 0) out += `|WCO:${f(this.wco.x)},${f(this.wco.y)},0.000|Ov:${this.ov.feed},${this.ov.rapid},${this.ov.spindle}`
     out += '>\r\n'
@@ -236,6 +236,7 @@ export class SimulatorConnection implements Connection {
       const frac = b.duration > 0 ? use / b.duration : 1
       const fromX = this.mx
       const fromY = this.my
+      if (b.dwell !== undefined && b.laser) this.maxLaserS = Math.max(this.maxLaserS, b.s)
       if (b.dwell === undefined) {
         this.mx += (b.x - b.x0) * frac
         this.my += (b.y - b.y0) * frac
@@ -319,6 +320,11 @@ export class SimulatorConnection implements Connection {
     if (words.S) this.s = words.S[0]
     if (gs.includes(90)) this.relative = false
     if (gs.includes(91)) this.relative = true
+    if (gs.includes(10) && words.L?.[0] === 2) {
+      if (words.X) this.wco.x = words.X[0]
+      if (words.Y) this.wco.y = words.Y[0]
+      return this.send('ok\r\n')
+    }
     if (gs.includes(10) && words.L?.[0] === 20) {
       if (words.X) this.wco.x = this.mx - words.X[0]
       if (words.Y) this.wco.y = this.my - words.Y[0]
@@ -335,12 +341,12 @@ export class SimulatorConnection implements Connection {
       else if (mm === 5) this.spindle = 'off'
       else if (![8, 9].includes(mm)) return this.fail(20)
     }
+    if (gs.includes(0)) this.motion = 0
+    if (gs.includes(1)) this.motion = 1
     if (gs.includes(4)) {
       this.planner.push(this.block({ dwell: words.P?.[0] ?? 0 }))
       return this.send('ok\r\n')
     }
-    if (gs.includes(0)) this.motion = 0
-    if (gs.includes(1)) this.motion = 1
     if (words.X || words.Y) {
       if (!gs.includes(0) && !gs.includes(1) && jog === false && gs.length === 0 && ms.length === 0 && this.motion === 1 && this.feed <= 0) return this.fail(22)
       const tx = words.X ? (this.relative ? this.lastTargetX() + words.X[0] : words.X[0] + this.wco.x) : this.lastTargetX()
@@ -372,7 +378,9 @@ export class SimulatorConnection implements Connection {
     const dist = Math.hypot(x - sx, y - sy)
     const duration = o.dwell !== undefined ? o.dwell : dist / (feedMmMin / 60)
     const laser =
-      !rapid && !o.jog && o.dwell === undefined ? this.spindle === 'M4' || this.spindle === 'M3' : o.dwell !== undefined ? this.spindle !== 'off' : false
+      // GRBL laser mode: only G1/G2/G3 fire; G0 and jogs never do. Standing still (a dwell) fires only with M3
+      // in G1 mode, because M4 scales power with speed and speed is zero.
+      !rapid && !o.jog && o.dwell === undefined ? this.spindle === 'M4' || this.spindle === 'M3' : o.dwell !== undefined ? this.spindle === 'M3' && this.motion !== 0 : false
     return { x, y, x0: sx, y0: sy, feedMmMin, s: laser ? this.s : 0, laser: laser && this.s > 0, dwell: o.dwell, jog: o.jog, remaining: duration, duration }
   }
 }

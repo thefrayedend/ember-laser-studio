@@ -23,6 +23,8 @@ export function SendDialog() {
   const status = useStore((s) => s.status)
   const settings = useStore((s) => s.settings)
   const raw = useStore((s) => s.raw)
+  const machine = useStore((s) => s.machine)
+  const homed = useStore((s) => s.homed)
   const doc = useStore((s) => s.doc)
   const powerCap = useStore((s) => s.powerCap)
   const { openSend, setOrigin, api, setTab, notify } = useStore.getState()
@@ -38,16 +40,26 @@ export function SendDialog() {
     settings[32] === undefined
       ? { ok: null, text: 'Laser mode ($32) not read yet' }
       : { ok: settings[32] === '1', text: settings[32] === '1' ? 'Laser mode is on ($32=1)' : 'Laser mode is OFF ($32=0). The laser would stay on during moves. Set $32=1 on the Device tab.' },
+    // $30 is the S value GRBL treats as 100%. If it differs from the profile, every power in the job is wrong.
+    settings[30] === undefined || raw
+      ? { ok: null, text: raw ? 'Imported G-code uses its own power values' : 'Max power ($30) not read yet' }
+      : Number(settings[30]) === machine.maxS
+        ? { ok: true, text: `Power scale matches the machine ($30=${settings[30]})` }
+        : { ok: false, text: `The machine's full power is S${settings[30]} ($30) but this profile uses S${machine.maxS}. Every power would be wrong. Use the button below to fix the profile.` },
     ...(gen.result?.warnings ?? []).map((w) => ({ ok: false as boolean | null, text: w })),
   ]
-  const blocked = checks.slice(0, 3).some((c) => c.ok === false) || (gen.result?.warnings ?? []).some((w) => /larger than|outside/.test(w))
+  const s30bad = !raw && settings[30] !== undefined && Number(settings[30]) !== machine.maxS && Number(settings[30]) > 0
+  const blocked = checks.slice(0, 4).some((c) => c.ok === false) || (gen.result?.warnings ?? []).some((w) => /larger than|outside/.test(w))
   const jobMode = origin.mode === 'job'
   const used = new Set(doc.objects.map((o) => o.layerId))
-  const notes = raw ? [] : sanityNotes(doc.layers.filter((l) => l.output && used.has(l.id)), { powerCap, estimateSeconds: gen.result?.estimateSeconds ?? gen.packed.estimateSeconds })
+  const m3raw = !!raw && raw.lines.some((l) => /^[^;(]*M0*3(?!\d)/i.test(l))
+  const notes = raw
+    ? m3raw ? [{ level: 'info' as const, text: 'This file uses M3 (constant power). If the connection drops mid-job, the laser can stay on where the head stops. Stay at the machine.' }] : []
+    : sanityNotes(doc.layers.filter((l) => l.output && used.has(l.id)), { powerCap, estimateSeconds: gen.result?.estimateSeconds ?? gen.packed.estimateSeconds })
 
   const start = async () => {
     setBusy(true)
-    const prelude = raw ? [] : jobMode ? ['G10 L20 P1 X0 Y0', 'G54'] : ['G10 L2 P1 X0 Y0', 'G54']
+    const prelude = raw ? (raw.jobOrigin ? ['G10 L20 P1 X0 Y0', 'G54'] : []) : jobMode ? ['G10 L20 P1 X0 Y0', 'G54'] : ['G10 L2 P1 X0 Y0', 'G54']
     const all = [...prelude, ...gen.lines]
     useStore.setState({ resumable: null, lastJob: where === 'pc' ? { lines: GrblClient.prepareJob(all), name: gen.name } : null })
     await api('job.start', { lines: all, name: gen.name, where })
@@ -80,7 +92,7 @@ export function SendDialog() {
                 </div>
               </>
             ) : (
-              <p className="hint">Needs the machine homed so its coordinates match the bed. Position on screen = position on the material.</p>
+              <p className={homed ? 'hint' : 'warn'}>{homed ? 'The machine is homed, so position on screen = position on the material.' : 'Press Home on the Device tab first. Until the machine has homed, it does not know where the bed is, and the design can land in the wrong place.'}</p>
             )}
           </div>
         )}
@@ -97,6 +109,9 @@ export function SendDialog() {
           </div>
         )}
 
+        {s30bad && (
+          <button onClick={() => (useStore.getState().setMachine({ ...machine, maxS: Number(settings[30]) }), void useStore.getState().generate())}>Use the machine's full power value (S{settings[30]})</button>
+        )}
         <ul className="checks">
           {checks.map((c, i) => (
             <li key={i} className={c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'meh'}>{c.ok === true ? '✓' : c.ok === false ? '✕' : '•'} {c.text}</li>

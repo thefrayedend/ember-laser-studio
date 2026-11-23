@@ -78,7 +78,17 @@ export class MachineController {
     client.on('job', (progress) => this.emit({ type: 'job', progress, where: 'pc' }))
     client.on('jobEnd', (e) => this.emit({ type: 'jobEnd', result: e.result, reason: e.reason, where: 'pc' }))
     client.on('settings', (settings) => this.emit({ type: 'settings', settings }))
-    client.on('welcome', (w) => this.emit({ type: 'welcome', version: w.version }))
+    client.on('welcome', (w) => {
+      this.emit({ type: 'welcome', version: w.version })
+      // Boards that reboot when the port opens print the banner late; ask for $$ again once it is up.
+      setTimeout(() => {
+        try {
+          if (this.client === client && !client.jobActive) client.requestSettings()
+        } catch {
+          /* ignore */
+        }
+      }, 400)
+    })
     client.on('connection', (c) => {
       if (!c.connected) this.stopDevicePoll()
       this.emit({ type: 'connection', connected: c.connected, error: c.error, label: conn.label, kind: conn.kind, deviceJobs: !!conn.deviceJobs })

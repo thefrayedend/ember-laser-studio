@@ -24,11 +24,18 @@ The first start takes about 2 minutes (it sets itself up). Later starts are fast
 
 Step 3 - Open Ember
 -------------------
-On a computer, phone or tablet on the same network, open the file
-MY-ACCESS-LINK.txt on this card (it appears after the first start).
-First time only: open the OWNER LINK in it and create the owner account (a name
-and a password). After that, everyone opens  http://ember.local  and signs in.
+On a computer, phone or tablet on the same network, open  http://ember.local
+The first time, Ember asks you to create the owner account (a name and a
+password). After that, everyone opens  http://ember.local  and signs in.
 The owner adds other people from the Admin page and can give them roles.
+
+No Wi-Fi set up and no network cable? After about 2 minutes the box starts
+its own Wi-Fi called "Ember-Setup-...." (password: ember1234). Join it and
+open  http://10.42.0.1
+
+The file MY-ACCESS-LINK.txt on this card (written after the first start) lists
+the box's addresses and the OWNER LINK, which resets the owner password if
+it is ever lost. Keep that link private.
 
 Then: Device tab > pick the laser's USB port > Connect.
 

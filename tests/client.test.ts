@@ -190,11 +190,45 @@ describe('GrblClient + simulator', () => {
     await client.disconnect()
   })
 
-  it('laser test pulse sends M3, dwell, M5', async () => {
+  it('laser test pulse really fires: G1 + M3 (GRBL laser mode is off in G0, and M4 is off at rest), then back to G0', async () => {
     const { sim, client } = await setup()
     await client.pulseLaser(5, 1000, 100)
-    await until(() => sim.accepted.includes('M5S0'))
-    expect(sim.accepted.slice(-3)).toEqual(['M3S50', 'G4P0.10', 'M5S0'])
+    await until(() => sim.accepted.includes('G0'))
+    expect(sim.accepted.slice(-4)).toEqual(['G1F1000M3S50', 'G4P0.10', 'M5S0', 'G0'])
+    await until(() => sim.maxLaserS > 0)
+    expect(sim.maxLaserS).toBe(50)
+    await client.disconnect()
+  })
+
+  it('sends EEPROM-writing lines (G10, $ settings) alone, never streamed behind other lines', async () => {
+    const { sim, client } = await setup()
+    const sent: string[] = []
+    const inflight: number[] = []
+    const orig = sim.write.bind(sim)
+    sim.write = (c: string) => {
+      if (c.endsWith('\n')) (sent.push(c.trim()), inflight.push((client as unknown as { inFlight: number }).inFlight))
+      orig(c)
+    }
+    client.startJob(['G10 L20 P1 X0 Y0', 'G1 X1 F600', 'G1 X2', 'G1 X3'], 'sync')
+    await until(() => !client.jobActive, 5000)
+    const i = sent.indexOf('G10L20P1X0Y0')
+    expect(i).toBeGreaterThanOrEqual(0)
+    // nothing else was in flight when G10 went out, and G10 had been acknowledged before the next line went
+    expect(inflight[i]).toBe('G10L20P1X0Y0'.length + 1)
+    expect(sim.overflowed).toBe(false)
+    await client.disconnect()
+  })
+
+  it('stop waits for the feed hold to finish before resetting, so GRBL keeps its position', async () => {
+    const { sim, client } = await setup()
+    const lines = Array.from({ length: 200 }, (_, i) => `G1 X${(i % 2) * 50} Y${i * 0.1} S500 F3000`)
+    client.startJob(['M4 S0', ...lines], 'long')
+    await until(() => sim.machineState === 'Run')
+    client.stop()
+    expect(sim.machineState).not.toBe('Idle') // the reset is not sent at once
+    await until(() => sim.machineState === 'Idle', 5000)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(sim.machineState).toBe('Idle') // reset arrived after the hold finished: no ALARM:3
     await client.disconnect()
   })
 })
